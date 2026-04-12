@@ -690,6 +690,14 @@ async function sendMessage(prefill) {
                     currentToolName = evt.name;
                     toolChipEl = appendToolChip(evt.name, false);
                     if (task) task.messages.push({role: 'tool_chip', name: evt.name, done: false});
+                    // Show inline status hint for long-running tools
+                    if (evt.name === 'search_businesses_maps') {
+                        if (!agentContentEl) agentContentEl = appendAgentMessage('');
+                        agentContentEl.innerHTML = '<span class="text-gray-400 italic">🗺️ Searching Google Maps…</span>';
+                    } else if (evt.name === 'enrich_leads_batch') {
+                        if (!agentContentEl) agentContentEl = appendAgentMessage('');
+                        agentContentEl.innerHTML = '<span class="text-gray-400 italic">⚡ Enriching leads with Sunbiz, website, and contact data…</span>';
+                    }
 
                 } else if (evt.type === 'tool_end') {
                     if (toolChipEl) {
@@ -703,8 +711,8 @@ async function sendMessage(prefill) {
                         if (chip) chip.done = true;
                     }
 
-                    // Render special results
-                    const leadsResult = ['apollo_search_people','enrich_leads_batch','search_businesses_maps']
+                    // Render table only after enrichment is complete (not from raw Maps data)
+                    const leadsResult = ['apollo_search_people','enrich_leads_batch']
                         .includes(evt.name) && evt.result?.leads?.length ? evt.result.leads : null;
                     if (leadsResult) {
                         const tableDiv = document.createElement('div');
