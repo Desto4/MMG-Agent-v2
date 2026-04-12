@@ -1165,14 +1165,34 @@ def run_agent_gemini(user_message, history, gemini_key, model,
 
 def run_agent_perplexity(user_message, history, perplexity_key, model,
                          apollo_key="", hubspot_token=""):
-    yield from _run_agent_openai_compat(
-        user_message, history,
-        api_key=perplexity_key,
-        model=model,
-        base_url="https://api.perplexity.ai/",
-        apollo_key=apollo_key,
-        hubspot_token=hubspot_token,
-    )
+    """
+    Perplexity sonar models have built-in web search but do NOT support
+    function/tool calling — so we use a plain chat completion loop.
+    """
+    from openai import OpenAI as _OAI
+
+    client = _OAI(api_key=perplexity_key, base_url="https://api.perplexity.ai/")
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for msg in history:
+        role    = msg.get("role")
+        content = msg.get("content")
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_message})
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+        )
+        text = response.choices[0].message.content or ""
+        if text:
+            yield f"data: {json.dumps({'type': 'text', 'content': text})}\n\n"
+    except Exception as e:
+        yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+
+    yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
 
 # ── Anthropic agent loop ──────────────────────────────────────────────────────
