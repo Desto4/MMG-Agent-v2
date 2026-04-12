@@ -1,14 +1,19 @@
 #!/bin/bash
 
-echo "🚀 Starting Lead Gen App..."
+echo "🚀 Starting MMG Agent (Flask)..."
 
-# Start Streamlit in the background
-streamlit run app.py &
-STREAMLIT_PID=$!
+# Kill any existing processes on port 8501
+lsof -ti:8501 | xargs kill -9 2>/dev/null
 
-# Wait for Streamlit to start
-sleep 3
+# Start Flask in the background
+python3 flask_app.py &
+FLASK_PID=$!
+echo "Flask PID: $FLASK_PID"
 
-# Start ngrok with a random temporary URL
+# Wait for Flask to start
+sleep 2
+echo "✅ Flask running at http://localhost:8501"
+
+# Start ngrok tunnel
 echo "🌐 Starting ngrok tunnel..."
 ngrok http 8501 --log=stdout

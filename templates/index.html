@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MMG Agent UI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+
+        /* Typing animation for streaming text */
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+        .typing-cursor::after {
+            content: '|';
+            animation: blink 1s step-start infinite;
+            margin-left: 1px;
+            color: #14b8a6;
+        }
+
+        /* Tool chip pulse */
+        @keyframes pulse-bg {
+            0%,100%{ background-color: rgb(239 246 255); }
+            50%{ background-color: rgb(219 234 254); }
+        }
+        .tool-running { animation: pulse-bg 1.2s ease-in-out infinite; }
+    </style>
+</head>
+<body class="flex h-screen bg-white text-gray-800 overflow-hidden">
+
+    <!-- ── Sidebar ─────────────────────────────────────────────────── -->
+    <aside class="w-64 bg-[#0f172a] text-gray-400 flex flex-col justify-between flex-shrink-0">
+        <div>
+            <div class="h-16 flex items-center px-6 border-b border-gray-800">
+                <div class="bg-teal-500 text-white rounded p-1 mr-3 flex items-center justify-center h-8 w-8">
+                    <i class="fa-solid fa-building"></i>
+                </div>
+                <span class="text-white font-semibold text-lg tracking-wide">MMG Agent</span>
+            </div>
+
+            <div class="p-4 space-y-4">
+                <button onclick="newTask()" class="w-full bg-teal-500 hover:bg-teal-400 text-white font-medium py-2 px-4 rounded-md flex items-center shadow-sm transition-colors">
+                    <i class="fa-solid fa-plus mr-2"></i> New task
+                </button>
+
+                <nav class="space-y-1 mt-6">
+                    <a onclick="showPage('tasks')" class="flex items-center px-3 py-2 hover:text-white hover:bg-gray-800 rounded-md transition-colors cursor-pointer nav-link" data-page="tasks">
+                        <i class="fa-regular fa-square-check w-6 mr-2"></i> Tasks
+                    </a>
+                    <a onclick="showPage('connectors')" class="flex items-center px-3 py-2 hover:text-white hover:bg-gray-800 rounded-md transition-colors cursor-pointer nav-link" data-page="connectors">
+                        <i class="fa-solid fa-link w-6 mr-2"></i> Connectors
+                    </a>
+                </nav>
+            </div>
+        </div>
+
+        <div class="p-4 border-t border-gray-800 flex items-center cursor-pointer hover:bg-gray-800 transition-colors" onclick="toggleSettings()">
+            <div class="bg-teal-900 text-teal-400 rounded-full h-8 w-8 flex items-center justify-center font-bold text-xs mr-3">JD</div>
+            <div class="flex-1">
+                <p class="text-white text-sm font-medium">James Deal</p>
+                <p class="text-xs">Broker</p>
+            </div>
+            <i class="fa-solid fa-chevron-down text-xs"></i>
+        </div>
+    </aside>
+
+    <!-- ── Main area ───────────────────────────────────────────────── -->
+    <main class="flex-1 flex flex-col relative h-full overflow-hidden">
+
+        <!-- TASKS PAGE -->
+        <div id="page-tasks" class="flex flex-col h-full">
+            <header class="h-16 flex items-center justify-between px-8 border-b border-gray-200 bg-white z-10 flex-shrink-0">
+                <div>
+                    <h1 class="font-semibold text-gray-800 text-lg">Tasks</h1>
+                    <p class="text-xs text-gray-400">History of all agent sessions and generated outputs.</p>
+                </div>
+                <button onclick="newTask()" class="bg-gray-900 hover:bg-gray-700 text-white text-sm font-medium py-2 px-4 rounded-md flex items-center">
+                    <i class="fa-solid fa-plus mr-2"></i> New task
+                </button>
+            </header>
+            <div class="flex-1 overflow-y-auto p-8">
+                <div class="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                    <table class="w-full text-left text-sm">
+                        <thead class="text-xs text-gray-400 uppercase bg-gray-50 border-b border-gray-100">
+                            <tr>
+                                <th class="px-6 py-3 font-medium">Task</th>
+                                <th class="px-6 py-3 font-medium">Status</th>
+                                <th class="px-6 py-3 font-medium">Outputs</th>
+                                <th class="px-6 py-3 font-medium">Time</th>
+                                <th class="px-6 py-3 font-medium"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="tasks-tbody">
+                            <tr><td colspan="5" class="px-6 py-8 text-center text-gray-400">No tasks yet. Click "New task" to get started.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Download buttons (shown when files are available) -->
+                <div id="download-bar" class="hidden mt-4 flex gap-3">
+                    <a href="/api/download/leads" class="inline-flex items-center gap-2 bg-white border border-gray-200 text-gray-700 text-sm font-medium py-2 px-4 rounded-lg hover:bg-gray-50 shadow-sm">
+                        <i class="fa-solid fa-download text-teal-500"></i> Download leads.csv
+                    </a>
+                    <a href="/api/download/outreach" class="inline-flex items-center gap-2 bg-white border border-gray-200 text-gray-700 text-sm font-medium py-2 px-4 rounded-lg hover:bg-gray-50 shadow-sm">
+                        <i class="fa-solid fa-download text-teal-500"></i> Download outreach_drafts.csv
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- SESSION PAGE -->
+        <div id="page-session" class="flex flex-col h-full hidden">
+            <header class="h-16 flex items-center justify-between px-8 border-b border-gray-200 bg-white z-10 flex-shrink-0">
+                <div class="flex items-center gap-3">
+                    <button onclick="showPage('tasks')" class="text-gray-400 hover:text-gray-600 transition-colors">
+                        <i class="fa-solid fa-arrow-left"></i>
+                    </button>
+                    <div>
+                        <h1 class="font-semibold text-gray-800 text-lg" id="session-title">Agent Session</h1>
+                    </div>
+                </div>
+                <div id="session-status" class="flex items-center border border-gray-200 rounded-full px-3 py-1 bg-white shadow-sm">
+                    <div class="w-2 h-2 rounded-full bg-teal-500 mr-2"></div>
+                    <span class="text-sm font-medium text-teal-600">Live</span>
+                </div>
+            </header>
+            <div id="chat-messages" class="flex-1 overflow-y-auto p-8 pb-32">
+                <div class="max-w-4xl mx-auto space-y-6" id="messages-container"></div>
+            </div>
+            <!-- Floating input bar -->
+            <div class="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-10 pb-6 px-8 z-20">
+                <div class="max-w-4xl mx-auto relative">
+                    <input id="chat-input" type="text"
+                        placeholder="Ask me to find leads, load to HubSpot, draft emails…"
+                        class="w-full pl-6 pr-14 py-4 bg-white border border-gray-200 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-700 disabled:opacity-50"
+                        onkeydown="if(event.key==='Enter') sendMessage()">
+                    <button id="send-btn" onclick="sendMessage()"
+                        class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-gray-100 hover:bg-gray-200 text-gray-500 p-2 rounded-lg transition-colors disabled:opacity-40">
+                        <i class="fa-solid fa-arrow-up"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- CONNECTORS PAGE -->
+        <div id="page-connectors" class="flex flex-col h-full hidden">
+            <header class="h-16 flex items-center px-8 border-b border-gray-200 bg-white z-10 flex-shrink-0">
+                <div>
+                    <h1 class="font-semibold text-gray-800 text-lg">Connectors</h1>
+                    <p class="text-xs text-gray-400">Connect your tools. The agent uses these to take action on your behalf.</p>
+                </div>
+            </header>
+            <div class="flex-1 overflow-y-auto p-8">
+                <div id="connectors-grid" class="grid grid-cols-2 gap-4 max-w-3xl"></div>
+            </div>
+        </div>
+
+        <!-- SETTINGS MODAL -->
+        <div id="settings-modal" class="hidden fixed inset-0 bg-black/40 z-50 flex items-center justify-center">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-md p-8">
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="font-semibold text-gray-900 text-lg">API Configuration</h2>
+                    <button onclick="toggleSettings()" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+                </div>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Anthropic API Key</label>
+                        <input id="input-anthropic" type="password" placeholder="sk-ant-..."
+                            class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Apollo API Key</label>
+                        <input id="input-apollo" type="password" placeholder="Apollo key..."
+                            class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">HubSpot Token</label>
+                        <input id="input-hubspot" type="password" placeholder="pat-na1-..."
+                            class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+                    </div>
+                </div>
+                <div id="config-msg" class="hidden mt-3 text-sm text-teal-600 font-medium"></div>
+                <div class="flex gap-3 mt-6">
+                    <button onclick="saveConfig()" class="flex-1 bg-teal-500 hover:bg-teal-400 text-white font-medium py-2 rounded-lg text-sm transition-colors">Save</button>
+                    <button onclick="toggleSettings()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-600 font-medium py-2 rounded-lg text-sm transition-colors">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- TOAST notifications -->
+        <div id="toast" class="hidden fixed bottom-6 right-6 z-50 bg-gray-900 text-white text-sm px-5 py-3 rounded-xl shadow-lg transition-all"></div>
+
+    </main>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let tasks = [];
+let currentTaskId = null;
+let chatHistory = [];
+let isStreaming = false;
+let hasLeads = false;
+let hasOutreach = false;
+
+// ── Utilities ──────────────────────────────────────────────────────────────
+function toast(msg, duration = 2500) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.remove('hidden');
+    setTimeout(() => el.classList.add('hidden'), duration);
+}
+
+function timeAgo(date) {
+    const secs = Math.floor((new Date() - date) / 1000);
+    if (secs < 60) return 'Just now';
+    if (secs < 3600) return `${Math.floor(secs/60)}m ago`;
+    if (secs < 86400) return `${Math.floor(secs/3600)}h ago`;
+    return date.toLocaleDateString();
+}
+
+function scrollToBottom() {
+    const el = document.getElementById('chat-messages');
+    el.scrollTop = el.scrollHeight;
+}
+
+// ── Navigation ─────────────────────────────────────────────────────────────
+function showPage(page) {
+    ['tasks','session','connectors'].forEach(p => {
+        document.getElementById(`page-${p}`).classList.add('hidden');
+    });
+    document.getElementById(`page-${page}`).classList.remove('hidden');
+    document.querySelectorAll('.nav-link').forEach(el => {
+        el.classList.toggle('text-white', el.dataset.page === page);
+        el.classList.toggle('bg-gray-800', el.dataset.page === page);
+    });
+    if (page === 'connectors') loadConnectors();
+}
+
+// ── Tasks ──────────────────────────────────────────────────────────────────
+function newTask() {
+    const task = {
+        id: Date.now(),
+        description: 'New task',
+        status: 'in_progress',
+        outputs: [],
+        time: new Date(),
+        messages: []
+    };
+    tasks.unshift(task);
+    currentTaskId = task.id;
+    chatHistory = [];
+    document.getElementById('messages-container').innerHTML = '';
+    document.getElementById('session-title').textContent = 'Agent Session';
+    renderTasks();
+    showPage('session');
+    document.getElementById('chat-input').focus();
+}
+
+function openTask(id) {
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+    currentTaskId = id;
+    chatHistory = task.messages
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .map(m => ({role: m.role, content: m.content}));
+    const container = document.getElementById('messages-container');
+    container.innerHTML = '';
+    task.messages.forEach(m => {
+        if (m.role === 'user') appendUserBubble(m.content);
+        else if (m.role === 'assistant') appendAgentMessage(m.content);
+        else if (m.role === 'tool_chip') appendToolChipStatic(m.name, m.done);
+        else if (m.role === 'leads_table') {
+            const container2 = document.getElementById('messages-container');
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = renderLeadsTable(m.leads);
+            container2.appendChild(wrapper.firstElementChild);
+        }
+    });
+    document.getElementById('session-title').textContent =
+        task.description !== 'New task' ? task.description.slice(0,40) : 'Agent Session';
+    showPage('session');
+    scrollToBottom();
+}
+
+function renderTasks() {
+    const tbody = document.getElementById('tasks-tbody');
+    if (tasks.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="px-6 py-8 text-center text-gray-400">No tasks yet. Click "New task" to get started.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = tasks.map(t => {
+        const statusBadge = {
+            completed:   '<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700"><span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span> Completed</span>',
+            in_progress: '<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700"><span class="w-1.5 h-1.5 rounded-full bg-blue-500 inline-block"></span> In Progress</span>',
+            failed:      '<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700"><span class="w-1.5 h-1.5 rounded-full bg-red-500 inline-block"></span> Failed</span>',
+        }[t.status] || '';
+        const outputs = t.outputs.map(o =>
+            `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 mr-1">${o}</span>`
+        ).join('');
+        return `<tr class="border-b border-gray-50 hover:bg-gray-50 cursor-pointer" onclick="openTask(${t.id})">
+            <td class="px-6 py-4 font-medium text-gray-900">${escHtml(t.description)}</td>
+            <td class="px-6 py-4">${statusBadge}</td>
+            <td class="px-6 py-4">${outputs || '<span class="text-gray-300">—</span>'}</td>
+            <td class="px-6 py-4 text-gray-400 text-xs">${timeAgo(t.time)}</td>
+            <td class="px-6 py-4"><button class="text-xs text-teal-600 hover:underline">Open</button></td>
+        </tr>`;
+    }).join('');
+
+    // Show download bar if we have CSVs
+    document.getElementById('download-bar').classList.toggle('hidden', !hasLeads && !hasOutreach);
+}
+
+function escHtml(str) {
+    return String(str)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;');
+}
+
+// ── Chat rendering ─────────────────────────────────────────────────────────
+function appendUserBubble(text) {
+    const container = document.getElementById('messages-container');
+    const div = document.createElement('div');
+    div.className = 'flex justify-end';
+    div.innerHTML = `<div class="bg-[#0f172a] text-white rounded-2xl rounded-tr-sm px-5 py-3 max-w-lg text-sm leading-relaxed">${escHtml(text)}</div>`;
+    container.appendChild(div);
+    scrollToBottom();
+}
+
+function appendAgentMessage(text) {
+    const container = document.getElementById('messages-container');
+    const div = document.createElement('div');
+    div.className = 'flex items-start space-x-4';
+    const safeHtml = text.replace(/\n/g, '<br>');
+    div.innerHTML = `
+        <div class="bg-teal-500 text-white rounded-lg h-8 w-8 flex items-center justify-center flex-shrink-0 mt-1 text-xs font-bold">M</div>
+        <div class="flex-1 min-w-0">
+            <p class="text-xs font-semibold text-gray-400 mb-2">MMG Agent</p>
+            <div class="bg-white border border-gray-200 rounded-xl px-5 py-4 text-sm text-gray-700 leading-relaxed shadow-sm agent-content">${safeHtml}</div>
+        </div>`;
+    container.appendChild(div);
+    scrollToBottom();
+    return div.querySelector('.agent-content');
+}
+
+function appendToolChip(name, done) {
+    const container = document.getElementById('messages-container');
+    const icons = {
+        apollo_search_people:   '🔍',
+        hubspot_create_contact: '📥',
+        web_search:             '🌐',
+        save_outreach_csv:      '💾',
+        save_leads_csv:         '💾'
+    };
+    const icon = icons[name] || '⚙️';
+    const label = name.replace(/_/g, ' ');
+    const div = document.createElement('div');
+    div.className = 'flex items-start space-x-4';
+    div.innerHTML = `
+        <div class="w-8 flex-shrink-0"></div>
+        <span class="${done
+            ? 'bg-green-50 text-green-700 border-green-200'
+            : 'bg-blue-50 text-blue-700 border-blue-200 tool-running'
+        } border rounded-full px-3 py-1 text-xs font-medium inline-flex items-center gap-1.5">
+            <span>${icon}</span>
+            <span>${done ? '✓' : '…'}</span>
+            <span>${label}</span>
+        </span>`;
+    container.appendChild(div);
+    scrollToBottom();
+    return div;
+}
+
+function appendToolChipStatic(name, done) {
+    appendToolChip(name, done);
+}
+
+// ── Chat send ──────────────────────────────────────────────────────────────
+async function sendMessage() {
+    if (isStreaming) return;
+    const input = document.getElementById('chat-input');
+    const message = input.value.trim();
+    if (!message) return;
+    input.value = '';
+    input.disabled = true;
+    document.getElementById('send-btn').disabled = true;
+    isStreaming = true;
+
+    // Update task description
+    const task = tasks.find(t => t.id === currentTaskId);
+    if (task && task.description === 'New task') {
+        task.description = message.length > 60 ? message.slice(0, 60) + '…' : message;
+        document.getElementById('session-title').textContent = task.description.slice(0,40);
+        renderTasks();
+    }
+
+    appendUserBubble(message);
+    if (task) task.messages.push({role: 'user', content: message});
+
+    let agentContentEl = null;
+    let agentText = '';
+    let toolChipEl = null;
+    let currentToolName = null;
+
+    try {
+        const resp = await fetch('/api/chat', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({message, history: chatHistory})
+        });
+
+        if (!resp.ok) {
+            const errText = await resp.text();
+            appendAgentMessage(`Server error ${resp.status}: ${errText}`);
+            isStreaming = false;
+            input.disabled = false;
+            document.getElementById('send-btn').disabled = false;
+            return;
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const {done, value} = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, {stream: true});
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // keep incomplete line
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                let evt;
+                try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+
+                if (evt.type === 'text') {
+                    if (!agentContentEl) {
+                        agentContentEl = appendAgentMessage('');
+                        agentContentEl.classList.add('typing-cursor');
+                    }
+                    agentText += evt.content;
+                    agentContentEl.innerHTML = agentText.replace(/\n/g, '<br>');
+                    scrollToBottom();
+
+                } else if (evt.type === 'tool_start') {
+                    currentToolName = evt.name;
+                    toolChipEl = appendToolChip(evt.name, false);
+                    if (task) task.messages.push({role: 'tool_chip', name: evt.name, done: false});
+
+                } else if (evt.type === 'tool_end') {
+                    if (toolChipEl) {
+                        const span = toolChipEl.querySelector('span');
+                        span.className = 'bg-green-50 text-green-700 border-green-200 border rounded-full px-3 py-1 text-xs font-medium inline-flex items-center gap-1.5';
+                        span.innerHTML = `<span>${getToolIcon(evt.name)}</span><span>✓</span><span>${evt.name.replace(/_/g,' ')}</span>`;
+                    }
+                    // Update the last tool_chip message to done
+                    if (task) {
+                        const chip = task.messages.findLast(m => m.role === 'tool_chip' && m.name === evt.name);
+                        if (chip) chip.done = true;
+                    }
+
+                    // Render special results
+                    if (evt.name === 'apollo_search_people' && evt.result?.leads?.length) {
+                        const tableDiv = document.createElement('div');
+                        tableDiv.innerHTML = renderLeadsTable(evt.result.leads);
+                        document.getElementById('messages-container').appendChild(tableDiv.firstElementChild);
+                        scrollToBottom();
+                        hasLeads = true;
+                        if (task) {
+                            task.outputs = task.outputs.filter(o => !o.includes('prospect'));
+                            task.outputs.push(`${evt.result.leads.length} prospects`);
+                            task.messages.push({role: 'leads_table', leads: evt.result.leads});
+                            renderTasks();
+                        }
+                    }
+                    if (evt.name === 'save_outreach_csv' && evt.result?.success) {
+                        hasOutreach = true;
+                        if (task) {
+                            task.outputs = task.outputs.filter(o => !o.includes('email draft'));
+                            task.outputs.push(`${evt.result.count} email drafts`);
+                            renderTasks();
+                        }
+                    }
+                    if (evt.name === 'hubspot_create_contact' && evt.result?.success) {
+                        if (task) {
+                            const ex = task.outputs.find(o => o.includes('HubSpot'));
+                            if (ex) {
+                                const n = (parseInt(ex) || 0) + 1;
+                                task.outputs = task.outputs.filter(o => !o.includes('HubSpot'));
+                                task.outputs.push(`${n} HubSpot contacts`);
+                            } else {
+                                task.outputs.push('1 HubSpot contact');
+                            }
+                            renderTasks();
+                        }
+                    }
+                    toolChipEl = null;
+
+                } else if (evt.type === 'done') {
+                    if (agentContentEl) agentContentEl.classList.remove('typing-cursor');
+                    chatHistory.push({role: 'user', content: message});
+                    chatHistory.push({role: 'assistant', content: agentText});
+                    if (task) {
+                        task.messages.push({role: 'assistant', content: agentText});
+                        task.status = 'completed';
+                        renderTasks();
+                    }
+
+                } else if (evt.type === 'error') {
+                    if (!agentContentEl) agentContentEl = appendAgentMessage('');
+                    agentContentEl.classList.remove('typing-cursor');
+                    agentContentEl.innerHTML += `<p class="text-red-500 mt-2 text-xs">Error: ${escHtml(evt.content)}</p>`;
+                    if (task) task.status = 'failed';
+                    renderTasks();
+                }
+            }
+        }
+    } catch (e) {
+        appendAgentMessage(`Connection error: ${e.message}`);
+        if (task) task.status = 'failed';
+        renderTasks();
+    }
+
+    isStreaming = false;
+    input.disabled = false;
+    document.getElementById('send-btn').disabled = false;
+    input.focus();
+}
+
+function getToolIcon(name) {
+    const icons = {
+        apollo_search_people: '🔍', hubspot_create_contact: '📥',
+        web_search: '🌐', save_outreach_csv: '💾', save_leads_csv: '💾'
+    };
+    return icons[name] || '⚙️';
+}
+
+// ── Leads table ────────────────────────────────────────────────────────────
+function renderLeadsTable(leads) {
+    const rows = leads.slice(0, 15).map((l, i) => `
+        <tr class="border-b border-gray-50 hover:bg-gray-50">
+            <td class="px-4 py-3">
+                <div class="font-medium text-gray-900 text-xs">${escHtml(l.company || '—')}</div>
+                <div class="text-xs text-gray-400">${escHtml(l.industry || '')}</div>
+            </td>
+            <td class="px-4 py-3 text-gray-500 text-xs">${escHtml((l.city || '') + (l.state ? ', ' + l.state : ''))}</td>
+            <td class="px-4 py-3 text-gray-500 text-xs">${escHtml(l.phone || '—')}</td>
+            <td class="px-4 py-3">
+                ${l.website ? `<a href="${escHtml(l.website)}" target="_blank" class="text-teal-600 hover:underline text-xs">${escHtml(l.website.replace(/^https?:\/\//, '').split('/')[0])}</a>` : '<span class="text-gray-300 text-xs">—</span>'}
+            </td>
+            <td class="px-4 py-3">
+                <span class="inline-flex items-center justify-center w-8 h-8 rounded-full border border-teal-200 text-teal-600 font-semibold bg-teal-50 text-xs">${Math.max(50, 88 - i * 3)}</span>
+            </td>
+        </tr>`).join('');
+    return `
+    <div class="flex items-start space-x-4">
+        <div class="w-8 flex-shrink-0"></div>
+        <div class="flex-1 mt-2 border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+            <div class="bg-gray-50 px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                <span class="text-sm font-medium text-gray-700">${leads.length} prospects found</span>
+                <a href="/api/download/leads" class="text-xs text-teal-600 hover:underline flex items-center gap-1">
+                    <i class="fa-solid fa-download"></i> Download CSV
+                </a>
+            </div>
+            <table class="w-full text-left text-sm">
+                <thead class="text-xs text-gray-400 uppercase bg-white border-b border-gray-100">
+                    <tr>
+                        <th class="px-4 py-2">Business</th>
+                        <th class="px-4 py-2">Location</th>
+                        <th class="px-4 py-2">Phone</th>
+                        <th class="px-4 py-2">Website</th>
+                        <th class="px-4 py-2">Score</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+            ${leads.length > 15 ? `<div class="px-4 py-2 text-xs text-gray-400 bg-gray-50 border-t border-gray-100">+${leads.length - 15} more rows in CSV download</div>` : ''}
+        </div>
+    </div>`;
+}
+
+// ── Connectors ─────────────────────────────────────────────────────────────
+async function loadConnectors() {
+    try {
+        const resp = await fetch('/api/config');
+        const config = await resp.json();
+        const grid = document.getElementById('connectors-grid');
+        const connectors = [
+            {
+                key: 'anthropic', name: 'Anthropic Claude',
+                icon: 'fa-solid fa-robot', color: 'text-purple-600',
+                desc: 'AI model powering the agent. Required for all operations.',
+                configured: config.anthropic
+            },
+            {
+                key: 'hubspot', name: 'HubSpot',
+                icon: 'fa-brands fa-hubspot', color: 'text-orange-500',
+                desc: 'CRM platform. Sync contacts and companies automatically.',
+                configured: config.hubspot
+            },
+            {
+                key: 'apollo', name: 'Apollo.io',
+                icon: 'fa-solid fa-magnifying-glass', color: 'text-gray-700',
+                desc: 'B2B lead database. Search companies and contacts.',
+                configured: config.apollo
+            },
+        ];
+        grid.innerHTML = connectors.map(c => `
+            <div class="bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-lg bg-gray-50 border border-gray-100 flex items-center justify-center">
+                            <i class="${c.icon} ${c.color} text-xl"></i>
+                        </div>
+                        <div>
+                            <div class="font-semibold text-gray-900 text-sm">${c.name}</div>
+                            ${c.configured
+                                ? '<span class="text-xs text-teal-600 font-medium flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-teal-500 inline-block"></span> Connected</span>'
+                                : '<span class="text-xs text-gray-400">Not connected</span>'}
+                        </div>
+                    </div>
+                </div>
+                <p class="text-xs text-gray-500 mb-4">${c.desc}</p>
+                <button onclick="toggleSettings()" class="w-full text-center text-xs font-medium py-1.5 rounded-lg border ${c.configured
+                    ? 'border-teal-200 text-teal-600 bg-teal-50 hover:bg-teal-100'
+                    : 'border-gray-200 text-gray-600 bg-gray-50 hover:bg-gray-100'} transition-colors">
+                    ${c.configured ? 'Configure' : 'Connect'}
+                </button>
+            </div>`).join('');
+    } catch (e) {
+        console.error('Failed to load connectors', e);
+    }
+}
+
+// ── Settings ───────────────────────────────────────────────────────────────
+function toggleSettings() {
+    const modal = document.getElementById('settings-modal');
+    modal.classList.toggle('hidden');
+    if (!modal.classList.contains('hidden')) {
+        document.getElementById('config-msg').classList.add('hidden');
+    }
+}
+
+// Close modal on backdrop click
+document.getElementById('settings-modal').addEventListener('click', function(e) {
+    if (e.target === this) toggleSettings();
+});
+
+async function saveConfig() {
+    const body = {
+        anthropic_key: document.getElementById('input-anthropic').value.trim(),
+        apollo_key:    document.getElementById('input-apollo').value.trim(),
+        hubspot_token: document.getElementById('input-hubspot').value.trim(),
+    };
+
+    // Clear inputs after reading
+    const anyFilled = body.anthropic_key || body.apollo_key || body.hubspot_token;
+    if (!anyFilled) {
+        const msg = document.getElementById('config-msg');
+        msg.textContent = 'Please enter at least one key.';
+        msg.className = 'mt-3 text-sm text-red-500 font-medium';
+        msg.classList.remove('hidden');
+        return;
+    }
+
+    try {
+        await fetch('/api/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        });
+        // Clear the inputs
+        document.getElementById('input-anthropic').value = '';
+        document.getElementById('input-apollo').value = '';
+        document.getElementById('input-hubspot').value = '';
+
+        toggleSettings();
+        toast('API keys saved successfully');
+
+        // Refresh connectors if on that page
+        if (!document.getElementById('page-connectors').classList.contains('hidden')) {
+            loadConnectors();
+        }
+    } catch (e) {
+        toast(`Error saving config: ${e.message}`);
+    }
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+showPage('tasks');
+</script>
+</body>
+</html>

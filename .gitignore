@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+
+# App outputs
+leads.csv
+outreach_drafts.csv
+flask.log
+
+# Claude Code internal
+.claude/
+
+# macOS
+.DS_Store
