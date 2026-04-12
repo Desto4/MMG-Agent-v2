@@ -267,10 +267,20 @@
                             </button>
                         </div>
 
-                        <!-- Anthropic key (shown when Claude selected) -->
-                        <div id="anthropic-fields">
+                        <!-- Anthropic fields (shown when Claude selected) -->
+                        <div id="anthropic-fields" class="space-y-2">
                             <input id="input-anthropic" type="password" placeholder="Anthropic API key  (sk-ant-...)"
                                 class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+                            <select id="input-claude-model"
+                                class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white">
+                                <option value="claude-opus-4-5">claude-opus-4-5 (most capable)</option>
+                                <option value="claude-sonnet-4-5">claude-sonnet-4-5</option>
+                                <option value="claude-haiku-4-5">claude-haiku-4-5 (fastest)</option>
+                                <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet</option>
+                                <option value="claude-3-5-haiku-20241022">claude-3-5-haiku</option>
+                                <option value="claude-3-opus-20240229">claude-3-opus</option>
+                            </select>
+                            <p class="text-xs text-gray-400">Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" class="text-teal-500 underline">console.anthropic.com</a></p>
                         </div>
 
                         <!-- Gemini fields (shown when Gemini selected) -->
@@ -974,7 +984,8 @@ document.getElementById('settings-modal').addEventListener('click', function(e) 
 
 async function saveConfig() {
     const body = {
-        anthropic_key:  document.getElementById('input-anthropic').value.trim(),
+        anthropic_key:   document.getElementById('input-anthropic').value.trim(),
+        claude_model:    document.getElementById('input-claude-model').value,
         apollo_key:     document.getElementById('input-apollo').value.trim(),
         hubspot_token:  document.getElementById('input-hubspot').value.trim(),
         gemini_key:        document.getElementById('input-gemini').value.trim(),
@@ -1011,7 +1022,7 @@ async function saveConfig() {
             ? `Gemini (${body.gemini_model})`
             : currentProvider === 'perplexity'
             ? `Perplexity (${body.perplexity_model})`
-            : 'Claude';
+            : `Claude (${body.claude_model})`;
         toast(`Saved — using ${providerLabel}`);
 
         // Refresh connectors if visible
