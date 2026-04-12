@@ -30,28 +30,36 @@ SCRAPE_HEADERS = {
 # ── Lead CSV fields ───────────────────────────────────────────────────────────
 
 LEAD_FIELDS = [
+    # Business identity
     "trade_name",
     "entity_name",
     "formation_date",
     "years_in_business",
+    "sunbiz_status",
+    "sunbiz_url",
+    # Business contact
     "general_email",
-    "owner_name",
-    "owner_email",
-    "owner_phone",
-    "registered_agent",
-    "reg_agent_address",
     "business_phone",
     "address",
     "website",
+    # Owner
+    "owner_name",
+    "owner_email",
+    "owner_phone",
+    # Registered Agent
+    "registered_agent",
+    "reg_agent_address",
+    "reg_agent_email",
+    "reg_agent_phone",
+    # Social / reviews
     "instagram_url",
     "facebook_url",
     "google_review_count",
     "google_rating",
+    # Extra
     "industry",
     "employees",
     "linkedin_url",
-    "sunbiz_url",
-    "sunbiz_status",
 ]
 
 
@@ -163,6 +171,8 @@ TOOLS = [
                             "owner_phone":         {"type": "string"},
                             "registered_agent":    {"type": "string"},
                             "reg_agent_address":   {"type": "string"},
+                            "reg_agent_email":     {"type": "string"},
+                            "reg_agent_phone":     {"type": "string"},
                             "business_phone":      {"type": "string"},
                             "address":             {"type": "string"},
                             "website":             {"type": "string"},
@@ -696,6 +706,39 @@ def save_outreach_csv(drafts):
         return {"error": str(e)}
 
 
+def _find_person_contact(name, business_name="", city="", state=""):
+    """
+    Web-search for a person's email and phone number.
+    Used for owner and registered agent contact lookup.
+    Returns {"email": "...", "phone": "..."}.
+    """
+    if not name:
+        return {"email": "", "phone": ""}
+    query = f'"{name}" {business_name} {city} {state} email phone contact'.strip()
+    try:
+        result = web_search(query)
+        text = result.get("results", "")
+
+        # Email
+        found_emails = re.findall(
+            r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b', text
+        )
+        noise = {"example", "sentry", "wixpress", "squarespace", "domain", "noreply"}
+        email = ""
+        for e in found_emails:
+            if not any(n in e.lower() for n in noise) and len(e) < 60:
+                email = e.lower()
+                break
+
+        # Phone — US format
+        phones = re.findall(r'\(?\d{3}\)?[\s\.\-]?\d{3}[\s\.\-]?\d{4}', text)
+        phone = phones[0].strip() if phones else ""
+
+        return {"email": email, "phone": phone}
+    except Exception:
+        return {"email": "", "phone": ""}
+
+
 def enrich_leads_batch(leads):
     """
     Enrich every lead in the list with Sunbiz, website contact info, and
@@ -708,12 +751,16 @@ def enrich_leads_batch(leads):
 
     def _enrich_one(lead):
         result = dict(lead)
+        # Ensure all LEAD_FIELDS keys exist (blank by default)
+        for f in LEAD_FIELDS:
+            result.setdefault(f, "")
+
         name  = result.get("trade_name", "")
         url   = result.get("website", "")
         city  = result.get("city", "")
         state = result.get("state", "")
 
-        # 1. Sunbiz
+        # 1. Sunbiz — entity name, formation date, owner, registered agent
         try:
             sb = sunbiz_lookup(name)
             if sb.get("found"):
@@ -729,25 +776,53 @@ def enrich_leads_batch(leads):
         except Exception:
             pass
 
-        # 2. Website scrape
+        # 2. Website scrape — general email, Instagram, Facebook
         if url:
             try:
                 ws = scrape_website_contact(url)
-                result["general_email"] = ws.get("general_email", "")
+                if ws.get("general_email"):
+                    result["general_email"] = ws["general_email"]
                 if ws.get("instagram_url"):
                     result["instagram_url"] = ws["instagram_url"]
                 if ws.get("facebook_url") and not result.get("facebook_url"):
                     result["facebook_url"] = ws["facebook_url"]
+                # Pull any phone from website if business_phone still blank
+                if not result.get("business_phone") and ws.get("phones"):
+                    result["business_phone"] = ws["phones"][0]
             except Exception:
                 pass
 
-        # 3. Google reviews
+        # 3. Google reviews — rating + count
         try:
             gr = get_google_reviews(name, city, state)
             result["google_rating"]       = gr.get("google_rating", "")
             result["google_review_count"] = gr.get("google_review_count", "")
         except Exception:
             pass
+
+        # 4. Owner contact — email + cell phone via web search
+        owner = result.get("owner_name", "")
+        if owner and not (result.get("owner_email") and result.get("owner_phone")):
+            try:
+                oc = _find_person_contact(owner, name, city, state)
+                if oc.get("email") and not result.get("owner_email"):
+                    result["owner_email"] = oc["email"]
+                if oc.get("phone") and not result.get("owner_phone"):
+                    result["owner_phone"] = oc["phone"]
+            except Exception:
+                pass
+
+        # 5. Registered agent contact — email + cell phone via web search
+        agent = result.get("registered_agent", "")
+        if agent and not (result.get("reg_agent_email") and result.get("reg_agent_phone")):
+            try:
+                ac = _find_person_contact(agent, "", city, state)
+                if ac.get("email") and not result.get("reg_agent_email"):
+                    result["reg_agent_email"] = ac["email"]
+                if ac.get("phone") and not result.get("reg_agent_phone"):
+                    result["reg_agent_phone"] = ac["phone"]
+            except Exception:
+                pass
 
         return result
 
@@ -807,26 +882,50 @@ SYSTEM_PROMPT = """You are MMG Agent, a lead generation assistant for a commerci
 ## Workflow
 
 **Step 1 — Search Apollo**
-Call apollo_search_people with the keyword and location. This returns a list of businesses.
+Call apollo_search_people with the keyword and location.
 
 **Step 2 — Enrich all leads in ONE call**
-Pass the FULL leads list to enrich_leads_batch. This single tool call handles Sunbiz,
-website scraping, and Google reviews for every lead simultaneously — do NOT call
-sunbiz_lookup, scrape_website_contact, or get_google_reviews individually.
+Pass the FULL leads list to enrich_leads_batch. Do NOT call sunbiz_lookup,
+scrape_website_contact, or get_google_reviews individually — enrich_leads_batch
+does all of them in parallel.
 
 **Step 3 — Report results**
-Summarize the enriched leads: show a table with trade name, entity name, years in business,
-owner, registered agent, email, Instagram, Facebook, Google rating and review count.
+For EVERY lead, display ALL of the following fields (show "—" if not found):
+
+| Field | Value |
+|---|---|
+| Trade Name | |
+| Entity / Corporate Name (Sunbiz) | |
+| Formation Date | |
+| Years in Business | |
+| Sunbiz Status | |
+| General Email | |
+| Owner Name | |
+| Owner Email | |
+| Owner Cell Phone | |
+| Registered Agent | |
+| Registered Agent Address | |
+| Registered Agent Email | |
+| Registered Agent Phone | |
+| Business Phone | |
+| Address | |
+| Website | |
+| Instagram | |
+| Facebook | |
+| Google Rating | |
+| Google Review Count | |
+
+Show one table per lead, separated by a horizontal rule (---).
 
 **Step 4 — Optional next steps**
-- Use hubspot_create_contact to push leads to HubSpot CRM
-- Draft outreach emails and call save_outreach_csv
+- hubspot_create_contact to push leads to HubSpot CRM
+- save_outreach_csv to save email drafts
 
 ## Rules
-- NEVER call sunbiz_lookup, scrape_website_contact, or get_google_reviews one-by-one.
-  Always use enrich_leads_batch for enrichment.
-- Do not use web_search unless the user explicitly asks you to look something up.
-- When a field can't be found, leave it blank — never guess.
+- Always use enrich_leads_batch — never call individual enrichment tools.
+- Show ALL fields for every lead, every time — never skip a field.
+- If a field could not be found, show "—". Never leave a row blank or omit it.
+- Do not use web_search unless the user explicitly asks.
 """
 
 
