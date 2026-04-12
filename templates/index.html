@@ -563,8 +563,11 @@ function appendUserBubble(text) {
 
 function renderMarkdown(text) {
     if (typeof marked === 'undefined') return text.replace(/\n/g, '<br>');
-    marked.setOptions({ breaks: true, gfm: true });
-    return marked.parse(text);
+    try {
+        return marked.parse(text, { breaks: true, gfm: true });
+    } catch(e) {
+        try { return marked.parse(text); } catch(e2) { return text.replace(/\n/g, '<br>'); }
+    }
 }
 
 function appendAgentMessage(text) {
