@@ -14,8 +14,54 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 # Module-level storage for leads and outreach (per process)
-_leads_store = []
+_leads_store    = []
 _outreach_store = []
+_perf_store     = []   # performance records [{provider, model, duration_ms, ...}]
+
+# Approximate cost per 1M tokens (input, output) in USD
+_MODEL_PRICING = {
+    # Anthropic
+    "claude-opus-4-5":           (15.00, 75.00),
+    "claude-3-5-sonnet-20241022": (3.00, 15.00),
+    "claude-3-haiku-20240307":    (0.25,  1.25),
+    # Gemini
+    "gemini-2.5-flash-preview-04-17": (0.075, 0.30),
+    "gemini-2.5-pro-preview-05-06":   (1.25,  5.00),
+    "gemini-2.0-flash":               (0.075, 0.30),
+    "gemini-1.5-flash":               (0.075, 0.30),
+    "gemini-1.5-pro":                 (1.25,  5.00),
+    "gemini-3-flash-preview":         (0.075, 0.30),
+    # Perplexity
+    "sonar-pro":           (3.00, 15.00),
+    "sonar":               (1.00,  1.00),
+    "sonar-reasoning-pro": (2.00,  8.00),
+    "sonar-reasoning":     (1.00,  5.00),
+}
+
+def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Return estimated USD cost for a single request."""
+    price_in, price_out = _MODEL_PRICING.get(model, (1.00, 5.00))
+    return round((input_tokens * price_in + output_tokens * price_out) / 1_000_000, 6)
+
+def _record_perf(provider: str, model: str, duration_ms: int,
+                 input_tokens: int, output_tokens: int,
+                 tool_calls: int, leads_found: int, success: bool):
+    global _perf_store
+    _perf_store.append({
+        "ts":            __import__("time").time(),
+        "provider":      provider,
+        "model":         model,
+        "duration_ms":   duration_ms,
+        "input_tokens":  input_tokens,
+        "output_tokens": output_tokens,
+        "tool_calls":    tool_calls,
+        "leads_found":   leads_found,
+        "success":       success,
+        "cost_usd":      _estimate_cost(model, input_tokens, output_tokens),
+    })
+    # Keep last 200 records
+    if len(_perf_store) > 200:
+        _perf_store = _perf_store[-200:]
 
 SCRAPE_HEADERS = {
     "User-Agent": (
@@ -1087,12 +1133,13 @@ def _tools_openai_fmt():
 
 def _run_agent_openai_compat(user_message: str, history: list,
                               api_key: str, model: str, base_url: str,
+                              provider: str = "gemini",
                               apollo_key="", hubspot_token=""):
-    """Shared agent loop for any OpenAI-compatible endpoint (Gemini, Perplexity, etc.)."""
+    """Shared agent loop for any OpenAI-compatible endpoint (Gemini, etc.)."""
+    import time as _time
     from openai import OpenAI as _OAI
 
-    client = _OAI(api_key=api_key, base_url=base_url)
-
+    client    = _OAI(api_key=api_key, base_url=base_url)
     oai_tools = _tools_openai_fmt()
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -1103,15 +1150,21 @@ def _run_agent_openai_compat(user_message: str, history: list,
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": user_message})
 
+    t0 = _time.time()
+    success = False
+    total_in = total_out = total_tools = total_leads = 0
     try:
         while True:
             response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=oai_tools,
-                tool_choice="auto",
+                model=model, messages=messages,
+                tools=oai_tools, tool_choice="auto",
             )
-            choice = response.choices[0]
+            usage = getattr(response, "usage", None)
+            if usage:
+                total_in  += getattr(usage, "prompt_tokens",     0) or 0
+                total_out += getattr(usage, "completion_tokens", 0) or 0
+
+            choice  = response.choices[0]
             msg_obj = choice.message
 
             if msg_obj.content:
@@ -1120,8 +1173,8 @@ def _run_agent_openai_compat(user_message: str, history: list,
             if choice.finish_reason == "stop" or not msg_obj.tool_calls:
                 break
 
-            # Append assistant turn (with tool_calls) to history
             messages.append(msg_obj)
+            total_tools += len(msg_obj.tool_calls)
 
             tool_results = []
             for tc in msg_obj.tool_calls:
@@ -1136,6 +1189,8 @@ def _run_agent_openai_compat(user_message: str, history: list,
                                   apollo_key=apollo_key,
                                   hubspot_token=hubspot_token)
                 yield f"data: {json.dumps({'type': 'tool_end', 'name': name, 'result': result})}\n\n"
+                if isinstance(result, dict) and result.get("leads"):
+                    total_leads += len(result["leads"])
 
                 tool_results.append({
                     "role":         "tool",
@@ -1144,9 +1199,14 @@ def _run_agent_openai_compat(user_message: str, history: list,
                 })
 
             messages.extend(tool_results)
+        success = True
 
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+    finally:
+        _record_perf(provider, model,
+                     int((_time.time() - t0) * 1000),
+                     total_in, total_out, total_tools, total_leads, success)
 
     yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
@@ -1158,6 +1218,7 @@ def run_agent_gemini(user_message, history, gemini_key, model,
         api_key=gemini_key,
         model=model,
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        provider="gemini",
         apollo_key=apollo_key,
         hubspot_token=hubspot_token,
     )
@@ -1169,6 +1230,7 @@ def run_agent_perplexity(user_message, history, perplexity_key, model,
     Perplexity sonar models have built-in web search but do NOT support
     function/tool calling — so we use a plain chat completion loop.
     """
+    import time as _time
     from openai import OpenAI as _OAI
 
     client = _OAI(api_key=perplexity_key, base_url="https://api.perplexity.ai/")
@@ -1181,16 +1243,25 @@ def run_agent_perplexity(user_message, history, perplexity_key, model,
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": user_message})
 
+    t0 = _time.time()
+    success = False
+    input_tokens = output_tokens = 0
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-        )
+        response = client.chat.completions.create(model=model, messages=messages)
+        usage = getattr(response, "usage", None)
+        if usage:
+            input_tokens  = getattr(usage, "prompt_tokens",     0) or 0
+            output_tokens = getattr(usage, "completion_tokens", 0) or 0
         text = response.choices[0].message.content or ""
         if text:
             yield f"data: {json.dumps({'type': 'text', 'content': text})}\n\n"
+        success = True
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+    finally:
+        _record_perf("perplexity", model,
+                     int((_time.time() - t0) * 1000),
+                     input_tokens, output_tokens, 0, 0, success)
 
     yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
@@ -1201,7 +1272,9 @@ def run_agent_anthropic(user_message: str, history: list,
                         anthropic_key: str,
                         apollo_key="", hubspot_token=""):
     """Agent loop using the Anthropic SDK."""
+    import time as _time
     client = anthropic.Anthropic(api_key=anthropic_key)
+    MODEL  = "claude-opus-4-5"
 
     api_messages = []
     for msg in history:
@@ -1211,15 +1284,18 @@ def run_agent_anthropic(user_message: str, history: list,
             api_messages.append({"role": role, "content": content})
     api_messages.append({"role": "user", "content": user_message})
 
+    t0 = _time.time()
+    success = False
+    total_in = total_out = total_tools = total_leads = 0
     try:
         while True:
             response = client.messages.create(
-                model="claude-opus-4-5",
-                max_tokens=4096,
-                system=SYSTEM_PROMPT,
-                tools=TOOLS,
+                model=MODEL, max_tokens=4096,
+                system=SYSTEM_PROMPT, tools=TOOLS,
                 messages=api_messages,
             )
+            total_in  += getattr(response.usage, "input_tokens",  0) or 0
+            total_out += getattr(response.usage, "output_tokens", 0) or 0
 
             full_text  = ""
             tool_calls = []
@@ -1236,6 +1312,7 @@ def run_agent_anthropic(user_message: str, history: list,
                 break
 
             api_messages.append({"role": "assistant", "content": response.content})
+            total_tools += len(tool_calls)
 
             tool_results = []
             for tc in tool_calls:
@@ -1244,6 +1321,8 @@ def run_agent_anthropic(user_message: str, history: list,
                                   apollo_key=apollo_key,
                                   hubspot_token=hubspot_token)
                 yield f"data: {json.dumps({'type': 'tool_end', 'name': tc.name, 'result': result})}\n\n"
+                if isinstance(result, dict) and result.get("leads"):
+                    total_leads += len(result["leads"])
                 tool_results.append({
                     "type":        "tool_result",
                     "tool_use_id": tc.id,
@@ -1251,9 +1330,14 @@ def run_agent_anthropic(user_message: str, history: list,
                 })
 
             api_messages.append({"role": "user", "content": tool_results})
+        success = True
 
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+    finally:
+        _record_perf("anthropic", MODEL,
+                     int((_time.time() - t0) * 1000),
+                     total_in, total_out, total_tools, total_leads, success)
 
     yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
@@ -1393,6 +1477,51 @@ def chat():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.route("/api/performance")
+def get_performance():
+    """Return aggregated and raw performance stats."""
+    from collections import defaultdict
+
+    records = list(_perf_store)  # snapshot
+
+    # Per-provider aggregates
+    agg = defaultdict(lambda: {
+        "requests": 0, "successes": 0,
+        "total_ms": 0, "total_in": 0, "total_out": 0,
+        "total_tools": 0, "total_leads": 0, "total_cost": 0.0,
+    })
+    for r in records:
+        p = r["provider"]
+        agg[p]["requests"]    += 1
+        agg[p]["successes"]   += 1 if r["success"] else 0
+        agg[p]["total_ms"]    += r["duration_ms"]
+        agg[p]["total_in"]    += r["input_tokens"]
+        agg[p]["total_out"]   += r["output_tokens"]
+        agg[p]["total_tools"] += r["tool_calls"]
+        agg[p]["total_leads"] += r["leads_found"]
+        agg[p]["total_cost"]  += r["cost_usd"]
+
+    summary = {}
+    for p, d in agg.items():
+        n = d["requests"]
+        summary[p] = {
+            "requests":       n,
+            "success_rate":   round(d["successes"] / n * 100, 1) if n else 0,
+            "avg_ms":         round(d["total_ms"] / n) if n else 0,
+            "total_tokens":   d["total_in"] + d["total_out"],
+            "avg_tokens":     round((d["total_in"] + d["total_out"]) / n) if n else 0,
+            "total_leads":    d["total_leads"],
+            "avg_leads":      round(d["total_leads"] / n, 1) if n else 0,
+            "total_cost_usd": round(d["total_cost"], 4),
+            "avg_cost_usd":   round(d["total_cost"] / n, 4) if n else 0,
+        }
+
+    # Last 20 raw records (newest first)
+    recent = sorted(records, key=lambda r: r["ts"], reverse=True)[:20]
+
+    return jsonify({"summary": summary, "recent": recent})
 
 
 @app.route("/api/download/leads")

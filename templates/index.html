@@ -54,6 +54,9 @@
                     <a onclick="showPage('connectors')" class="flex items-center px-3 py-2 hover:text-white hover:bg-gray-800 rounded-md transition-colors cursor-pointer nav-link" data-page="connectors">
                         <i class="fa-solid fa-link w-6 mr-2"></i> Connectors
                     </a>
+                    <a onclick="showPage('performance')" class="flex items-center px-3 py-2 hover:text-white hover:bg-gray-800 rounded-md transition-colors cursor-pointer nav-link" data-page="performance">
+                        <i class="fa-solid fa-chart-bar w-6 mr-2"></i> Performance
+                    </a>
                 </nav>
             </div>
         </div>
@@ -163,6 +166,77 @@
             </header>
             <div class="flex-1 overflow-y-auto p-8">
                 <div id="connectors-grid" class="grid grid-cols-2 gap-4 max-w-3xl"></div>
+            </div>
+        </div>
+
+        <!-- PERFORMANCE PAGE -->
+        <div id="page-performance" class="flex flex-col h-full hidden">
+            <header class="h-16 flex items-center justify-between px-8 border-b border-gray-200 bg-white z-10 flex-shrink-0">
+                <div>
+                    <h1 class="font-semibold text-gray-800 text-lg">Model Performance</h1>
+                    <p class="text-xs text-gray-400">Compare response time, token usage, leads, and cost across providers.</p>
+                </div>
+                <button onclick="loadPerformance()" class="inline-flex items-center gap-2 text-xs text-teal-600 hover:text-teal-800 font-medium">
+                    <i class="fa-solid fa-arrows-rotate"></i> Refresh
+                </button>
+            </header>
+            <div class="flex-1 overflow-y-auto p-8 space-y-6">
+
+                <!-- Summary cards -->
+                <div id="perf-cards" class="grid grid-cols-2 lg:grid-cols-4 gap-4"></div>
+
+                <!-- Per-model comparison table -->
+                <div class="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                    <div class="px-6 py-3 bg-gray-50 border-b border-gray-100">
+                        <h2 class="text-sm font-semibold text-gray-700">Provider Comparison</h2>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm text-left">
+                            <thead class="text-[11px] font-semibold text-gray-400 uppercase tracking-wide bg-gray-50 border-b border-gray-100">
+                                <tr>
+                                    <th class="px-5 py-3">Provider</th>
+                                    <th class="px-5 py-3">Requests</th>
+                                    <th class="px-5 py-3">Success</th>
+                                    <th class="px-5 py-3">Avg Time</th>
+                                    <th class="px-5 py-3">Avg Tokens</th>
+                                    <th class="px-5 py-3">Leads Found</th>
+                                    <th class="px-5 py-3">Avg Cost</th>
+                                    <th class="px-5 py-3">Total Cost</th>
+                                </tr>
+                            </thead>
+                            <tbody id="perf-table-body" class="divide-y divide-gray-50">
+                                <tr><td colspan="8" class="px-5 py-8 text-center text-gray-400 text-xs">No data yet — run some queries first.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Recent requests -->
+                <div class="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                    <div class="px-6 py-3 bg-gray-50 border-b border-gray-100">
+                        <h2 class="text-sm font-semibold text-gray-700">Recent Requests</h2>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm text-left">
+                            <thead class="text-[11px] font-semibold text-gray-400 uppercase tracking-wide bg-gray-50 border-b border-gray-100">
+                                <tr>
+                                    <th class="px-5 py-3">Time</th>
+                                    <th class="px-5 py-3">Provider</th>
+                                    <th class="px-5 py-3">Model</th>
+                                    <th class="px-5 py-3">Duration</th>
+                                    <th class="px-5 py-3">Tokens</th>
+                                    <th class="px-5 py-3">Tools</th>
+                                    <th class="px-5 py-3">Leads</th>
+                                    <th class="px-5 py-3">Cost</th>
+                                    <th class="px-5 py-3">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="perf-recent-body" class="divide-y divide-gray-50">
+                                <tr><td colspan="9" class="px-5 py-8 text-center text-gray-400 text-xs">No data yet.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -327,10 +401,11 @@ function scrollToBottom() {
 
 // ── Navigation ─────────────────────────────────────────────────────────────
 function showPage(page) {
-    ['tasks','session','connectors'].forEach(p => {
+    ['tasks','session','connectors','performance'].forEach(p => {
         document.getElementById(`page-${p}`).classList.add('hidden');
     });
     document.getElementById(`page-${page}`).classList.remove('hidden');
+    if (page === 'performance') loadPerformance();
     document.querySelectorAll('.nav-link').forEach(el => {
         el.classList.toggle('text-white', el.dataset.page === page);
         el.classList.toggle('bg-gray-800', el.dataset.page === page);
@@ -943,6 +1018,116 @@ async function saveConfig() {
         }
     } catch (e) {
         toast(`Error saving config: ${e.message}`);
+    }
+}
+
+// ── Performance dashboard ───────────────────────────────────────────────────
+const PROVIDER_COLORS = {
+    anthropic:  { bg: 'bg-purple-50',  text: 'text-purple-700',  border: 'border-purple-200', dot: 'bg-purple-500' },
+    gemini:     { bg: 'bg-blue-50',    text: 'text-blue-700',    border: 'border-blue-200',   dot: 'bg-blue-500'   },
+    perplexity: { bg: 'bg-teal-50',    text: 'text-teal-700',    border: 'border-teal-200',   dot: 'bg-teal-500'   },
+};
+const PROVIDER_ICONS = { anthropic: '🤖', gemini: '✨', perplexity: '🔍' };
+
+function fmtMs(ms) {
+    return ms >= 60000 ? (ms/60000).toFixed(1)+'m' : ms >= 1000 ? (ms/1000).toFixed(1)+'s' : ms+'ms';
+}
+function fmtNum(n) { return Number(n).toLocaleString(); }
+function fmtCost(c) { return c < 0.0001 ? '<$0.0001' : '$'+Number(c).toFixed(4); }
+
+async function loadPerformance() {
+    try {
+        const data = await fetch('/api/performance').then(r => r.json());
+        const { summary, recent } = data;
+
+        // ── Summary cards ──
+        const providers = Object.keys(summary);
+        const totalReqs  = providers.reduce((s, p) => s + summary[p].requests,     0);
+        const totalLeads = providers.reduce((s, p) => s + summary[p].total_leads,  0);
+        const totalCost  = providers.reduce((s, p) => s + summary[p].total_cost_usd, 0);
+        const overallAvgMs = providers.length
+            ? Math.round(providers.reduce((s,p)=>s+summary[p].avg_ms,0)/providers.length) : 0;
+
+        document.getElementById('perf-cards').innerHTML = `
+            <div class="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
+                <p class="text-xs text-gray-400 mb-1">Total Requests</p>
+                <p class="text-2xl font-bold text-gray-900">${fmtNum(totalReqs)}</p>
+            </div>
+            <div class="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
+                <p class="text-xs text-gray-400 mb-1">Avg Response Time</p>
+                <p class="text-2xl font-bold text-gray-900">${fmtMs(overallAvgMs)}</p>
+            </div>
+            <div class="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
+                <p class="text-xs text-gray-400 mb-1">Total Leads Found</p>
+                <p class="text-2xl font-bold text-gray-900">${fmtNum(totalLeads)}</p>
+            </div>
+            <div class="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
+                <p class="text-xs text-gray-400 mb-1">Est. Total Cost</p>
+                <p class="text-2xl font-bold text-gray-900">${fmtCost(totalCost)}</p>
+            </div>`;
+
+        // ── Comparison table ──
+        if (providers.length === 0) {
+            document.getElementById('perf-table-body').innerHTML =
+                '<tr><td colspan="8" class="px-5 py-8 text-center text-gray-400 text-xs">No data yet — run some queries first.</td></tr>';
+        } else {
+            document.getElementById('perf-table-body').innerHTML = providers.map(p => {
+                const d  = summary[p];
+                const c  = PROVIDER_COLORS[p] || PROVIDER_COLORS.anthropic;
+                const icon = PROVIDER_ICONS[p] || '⚙️';
+                const successColor = d.success_rate >= 90 ? 'text-green-600' : d.success_rate >= 70 ? 'text-amber-600' : 'text-red-500';
+                return `<tr class="hover:bg-gray-50 transition-colors">
+                    <td class="px-5 py-3">
+                        <span class="inline-flex items-center gap-2 ${c.bg} ${c.text} border ${c.border} px-2.5 py-1 rounded-full text-xs font-semibold">
+                            <span class="w-1.5 h-1.5 rounded-full ${c.dot} inline-block"></span>
+                            ${icon} ${p.charAt(0).toUpperCase()+p.slice(1)}
+                        </span>
+                    </td>
+                    <td class="px-5 py-3 text-gray-700 font-medium">${fmtNum(d.requests)}</td>
+                    <td class="px-5 py-3 font-semibold ${successColor}">${d.success_rate}%</td>
+                    <td class="px-5 py-3 text-gray-700">${fmtMs(d.avg_ms)}</td>
+                    <td class="px-5 py-3 text-gray-700">${fmtNum(d.avg_tokens)}</td>
+                    <td class="px-5 py-3 text-gray-700">${fmtNum(d.total_leads)} <span class="text-gray-400 text-xs">(avg ${d.avg_leads})</span></td>
+                    <td class="px-5 py-3 text-gray-700">${fmtCost(d.avg_cost_usd)}</td>
+                    <td class="px-5 py-3 font-semibold text-gray-800">${fmtCost(d.total_cost_usd)}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        // ── Recent requests ──
+        if (!recent.length) {
+            document.getElementById('perf-recent-body').innerHTML =
+                '<tr><td colspan="9" class="px-5 py-8 text-center text-gray-400 text-xs">No data yet.</td></tr>';
+        } else {
+            document.getElementById('perf-recent-body').innerHTML = recent.map(r => {
+                const c    = PROVIDER_COLORS[r.provider] || PROVIDER_COLORS.anthropic;
+                const icon = PROVIDER_ICONS[r.provider] || '⚙️';
+                const d    = new Date(r.ts * 1000);
+                const timeStr = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+                return `<tr class="hover:bg-gray-50 transition-colors text-xs">
+                    <td class="px-5 py-2.5 text-gray-400">${timeStr}</td>
+                    <td class="px-5 py-2.5">
+                        <span class="inline-flex items-center gap-1 ${c.bg} ${c.text} border ${c.border} px-2 py-0.5 rounded-full font-medium">
+                            ${icon} ${r.provider}
+                        </span>
+                    </td>
+                    <td class="px-5 py-2.5 text-gray-500 font-mono">${escHtml(r.model)}</td>
+                    <td class="px-5 py-2.5 text-gray-700 font-medium">${fmtMs(r.duration_ms)}</td>
+                    <td class="px-5 py-2.5 text-gray-600">${fmtNum(r.input_tokens + r.output_tokens)}</td>
+                    <td class="px-5 py-2.5 text-gray-600">${r.tool_calls}</td>
+                    <td class="px-5 py-2.5 text-gray-600">${r.leads_found}</td>
+                    <td class="px-5 py-2.5 text-gray-600">${fmtCost(r.cost_usd)}</td>
+                    <td class="px-5 py-2.5">
+                        ${r.success
+                            ? '<span class="text-green-600 font-semibold">✓ OK</span>'
+                            : '<span class="text-red-500 font-semibold">✗ Error</span>'}
+                    </td>
+                </tr>`;
+            }).join('');
+        }
+
+    } catch(e) {
+        console.error('loadPerformance error:', e);
     }
 }
 
