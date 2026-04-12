@@ -577,12 +577,28 @@ def sunbiz_lookup(business_name):
                 browser.close()
                 return {"found": False, "searched": business_name}
 
-            # Pick the best-matching result by name overlap
-            search_norm = re.sub(r"[^a-z0-9]", "", business_name.lower())
+            # Pick the best-matching result using word-level overlap scoring
+            def _name_score(search, candidate):
+                """Score candidate against search using word overlap (higher = better match)."""
+                s_words = set(re.sub(r"[^a-z0-9\s]", "", search.lower()).split())
+                c_words = set(re.sub(r"[^a-z0-9\s]", "", candidate.lower().replace("&amp;", "")).split())
+                # Remove common noise words
+                noise = {"llc", "inc", "corp", "ltd", "co", "the", "a", "of", "and", "&"}
+                s_core = s_words - noise
+                c_core = c_words - noise
+                if not s_core:
+                    return 0
+                # Exact word matches weighted more heavily
+                exact = len(s_core & c_core)
+                # Partial/substring matches
+                partial = sum(1 for sw in s_core for cw in c_core if sw in cw or cw in sw) - exact
+                # Penalize length difference
+                length_penalty = abs(len(s_core) - len(c_core)) * 0.1
+                return exact * 2 + partial * 0.5 - length_penalty
+
             best_href, best_score = result_pairs[0][0], -1
             for href, name in result_pairs:
-                name_norm = re.sub(r"[^a-z0-9]", "", name.lower().replace("&amp;", ""))
-                score = sum(1 for c in search_norm if c in name_norm)
+                score = _name_score(business_name, name)
                 if score > best_score:
                     best_score = score
                     best_href = href
@@ -761,6 +777,62 @@ def scrape_website_contact(url):
         except Exception:
             continue
 
+    # If requests-based scraping found nothing useful, try Playwright for JS-heavy sites
+    if not emails and not instagram and not facebook and not phones:
+        try:
+            from playwright.sync_api import sync_playwright
+            import time as _time
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True)
+                ctx = browser.new_context(user_agent=SCRAPE_HEADERS["User-Agent"])
+                pg = ctx.new_page()
+                for page_url in pages[:2]:  # just home + /contact
+                    try:
+                        pg.goto(page_url, wait_until="domcontentloaded", timeout=15000)
+                        _time.sleep(1)
+                        html = pg.content()
+                        found = re.findall(
+                            r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b', html
+                        )
+                        noise = {
+                            "example", "sentry", "wixpress", "squarespace", "wordpress",
+                            "schema", "domain", "email", "support@sentry", "noreply",
+                            "webmaster", "user@",
+                        }
+                        for e in found:
+                            el = e.lower()
+                            if not any(n in el for n in noise) and len(el) < 80:
+                                emails.add(el)
+                        if not instagram:
+                            ig = re.search(
+                                r'(?:href|content)="https?://(?:www\.)?instagram\.com/([^/"?#\s]+)',
+                                html, re.IGNORECASE,
+                            )
+                            if ig and ig.group(1) not in ("p", "explore", "accounts", "stories"):
+                                instagram = f"https://www.instagram.com/{ig.group(1)}"
+                        if not facebook:
+                            fb = re.search(
+                                r'(?:href|content)="https?://(?:www\.)?facebook\.com/([^/"?#\s]+)',
+                                html, re.IGNORECASE,
+                            )
+                            if fb:
+                                handle = fb.group(1)
+                                skip = {"sharer", "share", "dialog", "plugins", "login", "groups", "events"}
+                                if handle not in skip:
+                                    facebook = f"https://www.facebook.com/{handle}"
+                        tel_links = re.findall(r'href="tel:([^"]+)"', html, re.IGNORECASE)
+                        for p in tel_links:
+                            clean = re.sub(r"[^\d+]", "", p)
+                            if len(clean) >= 10:
+                                phones.add(p.strip())
+                        if emails or instagram or facebook or phones:
+                            break
+                    except Exception:
+                        continue
+                browser.close()
+        except Exception:
+            pass
+
     # Prefer info@, contact@, hello@ style emails as "general email"
     priority_prefixes = ("info", "contact", "hello", "office", "admin", "mail", "booking")
     general_email = ""
@@ -923,29 +995,40 @@ def _find_person_contact(name, business_name="", city="", state=""):
     """
     if not name:
         return {"email": "", "phone": ""}
-    query = f'"{name}" {business_name} {city} {state} email phone contact'.strip()
-    try:
-        result = web_search(query)
-        text = result.get("results", "")
 
-        # Email
-        found_emails = re.findall(
-            r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b', text
-        )
-        noise = {"example", "sentry", "wixpress", "squarespace", "domain", "noreply"}
+    noise_domains = {"example", "sentry", "wixpress", "squarespace", "domain", "noreply",
+                     "wordpress", "schema", "w3.org", "google", "yelp", "facebook"}
+
+    def _extract(text):
+        emails = re.findall(r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b', text)
         email = ""
-        for e in found_emails:
-            if not any(n in e.lower() for n in noise) and len(e) < 60:
-                email = e.lower()
+        for e in emails:
+            el = e.lower()
+            if not any(n in el for n in noise_domains) and len(el) < 60:
+                email = el
                 break
-
-        # Phone — US format
         phones = re.findall(r'\(?\d{3}\)?[\s\.\-]?\d{3}[\s\.\-]?\d{4}', text)
         phone = phones[0].strip() if phones else ""
+        return email, phone
 
-        return {"email": email, "phone": phone}
-    except Exception:
-        return {"email": "", "phone": ""}
+    # Try multiple query strategies
+    queries = []
+    if business_name:
+        queries.append(f'"{name}" "{business_name}" email contact')
+        queries.append(f'"{name}" {city} {state} {business_name} owner email')
+    queries.append(f'"{name}" {city} {state} email phone')
+
+    for query in queries:
+        try:
+            result = web_search(query.strip())
+            text = result.get("results", "")
+            email, phone = _extract(text)
+            if email or phone:
+                return {"email": email, "phone": phone}
+        except Exception:
+            continue
+
+    return {"email": "", "phone": ""}
 
 
 def enrich_leads_batch(leads):
@@ -1001,13 +1084,16 @@ def enrich_leads_batch(leads):
             except Exception:
                 pass
 
-        # 3. Google reviews — rating + count
-        try:
-            gr = get_google_reviews(name, city, state)
-            result["google_rating"]       = gr.get("google_rating", "")
-            result["google_review_count"] = gr.get("google_review_count", "")
-        except Exception:
-            pass
+        # 3. Google reviews — rating + count (skip if already populated from Maps)
+        if not (result.get("google_rating") and result.get("google_review_count")):
+            try:
+                gr = get_google_reviews(name, city, state)
+                if gr.get("google_rating"):
+                    result["google_rating"] = gr["google_rating"]
+                if gr.get("google_review_count"):
+                    result["google_review_count"] = gr["google_review_count"]
+            except Exception:
+                pass
 
         # 4. Owner contact — email + cell phone via web search
         owner = result.get("owner_name", "")
@@ -1025,7 +1111,7 @@ def enrich_leads_batch(leads):
         agent = result.get("registered_agent", "")
         if agent and not (result.get("reg_agent_email") and result.get("reg_agent_phone")):
             try:
-                ac = _find_person_contact(agent, "", city, state)
+                ac = _find_person_contact(agent, name, city, state)
                 if ac.get("email") and not result.get("reg_agent_email"):
                     result["reg_agent_email"] = ac["email"]
                 if ac.get("phone") and not result.get("reg_agent_phone"):
