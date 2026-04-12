@@ -138,9 +138,16 @@
                         placeholder="Ask me to find leads, load to HubSpot, draft emails…"
                         class="w-full pl-6 pr-14 py-4 bg-white border border-gray-200 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-700 disabled:opacity-50"
                         onkeydown="if(event.key==='Enter') sendMessage()">
+                    <!-- Send button (shown when idle) -->
                     <button id="send-btn" onclick="sendMessage()"
                         class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-gray-100 hover:bg-gray-200 text-gray-500 p-2 rounded-lg transition-colors disabled:opacity-40">
                         <i class="fa-solid fa-arrow-up"></i>
+                    </button>
+                    <!-- Stop button (shown while streaming) -->
+                    <button id="stop-btn" onclick="stopStreaming()"
+                        class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-red-100 hover:bg-red-200 text-red-600 p-2 rounded-lg transition-colors hidden"
+                        title="Stop generation">
+                        <i class="fa-solid fa-stop"></i>
                     </button>
                 </div>
             </div>
@@ -204,6 +211,43 @@ let chatHistory = [];
 let isStreaming = false;
 let hasLeads = false;
 let hasOutreach = false;
+let activeReader = null;   // holds the current SSE ReadableStreamDefaultReader
+
+function setStreamingUI(streaming) {
+    const sendBtn = document.getElementById('send-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    const input   = document.getElementById('chat-input');
+    if (streaming) {
+        sendBtn.classList.add('hidden');
+        stopBtn.classList.remove('hidden');
+        input.disabled = true;
+    } else {
+        sendBtn.classList.remove('hidden');
+        stopBtn.classList.add('hidden');
+        input.disabled = false;
+        input.focus();
+    }
+}
+
+function stopStreaming() {
+    if (activeReader) {
+        activeReader.cancel();
+        activeReader = null;
+    }
+    isStreaming = false;
+    setStreamingUI(false);
+    // Mark any running tool chips as stopped
+    document.querySelectorAll('.tool-running').forEach(el => {
+        el.classList.remove('tool-running');
+        el.querySelector('.tool-status')?.classList.add('text-red-400');
+    });
+    const msgs = document.getElementById('chat-messages');
+    const stopNote = document.createElement('div');
+    stopNote.className = 'text-xs text-gray-400 text-center py-1';
+    stopNote.textContent = '⏹ Stopped';
+    msgs.appendChild(stopNote);
+    msgs.scrollTop = msgs.scrollHeight;
+}
 
 // ── Utilities ──────────────────────────────────────────────────────────────
 function toast(msg, duration = 2500) {
@@ -384,9 +428,8 @@ async function sendMessage() {
     const message = input.value.trim();
     if (!message) return;
     input.value = '';
-    input.disabled = true;
-    document.getElementById('send-btn').disabled = true;
     isStreaming = true;
+    setStreamingUI(true);
 
     // Update task description
     const task = tasks.find(t => t.id === currentTaskId);
@@ -415,12 +458,12 @@ async function sendMessage() {
             const errText = await resp.text();
             appendAgentMessage(`Server error ${resp.status}: ${errText}`);
             isStreaming = false;
-            input.disabled = false;
-            document.getElementById('send-btn').disabled = false;
+            setStreamingUI(false);
             return;
         }
 
         const reader = resp.body.getReader();
+        activeReader = reader;
         const decoder = new TextDecoder();
         let buffer = '';
 
@@ -525,16 +568,17 @@ async function sendMessage() {
         renderTasks();
     }
 
+    activeReader = null;
     isStreaming = false;
-    input.disabled = false;
-    document.getElementById('send-btn').disabled = false;
-    input.focus();
+    setStreamingUI(false);
 }
 
 function getToolIcon(name) {
     const icons = {
         apollo_search_people: '🔍', hubspot_create_contact: '📥',
-        web_search: '🌐', save_outreach_csv: '💾', save_leads_csv: '💾'
+        web_search: '🌐', save_outreach_csv: '💾', save_leads_csv: '💾',
+        enrich_leads_batch: '⚡', sunbiz_lookup: '🏛', scrape_website_contact: '🌐',
+        get_google_reviews: '⭐'
     };
     return icons[name] || '⚙️';
 }
