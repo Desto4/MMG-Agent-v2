@@ -289,8 +289,20 @@ TOOLS = [
         "name": "get_collected_leads",
         "description": (
             "Return the leads that were already collected and enriched in this session. "
-            "Use this when the user asks to upload leads to HubSpot, export, or do anything "
-            "with previously found leads. Do NOT search for new leads in that case."
+            "Use this when the user wants to view or work with previously found leads."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "upload_leads_to_hubspot",
+        "description": (
+            "Upload all collected leads to HubSpot CRM in one call. "
+            "Use this whenever the user asks to upload or sync leads to HubSpot. "
+            "Handles all field mapping automatically — do NOT use hubspot_create_contact manually."
         ),
         "input_schema": {
             "type": "object",
@@ -1065,6 +1077,85 @@ def get_collected_leads():
     return {"leads": _leads_store, "count": len(_leads_store)}
 
 
+def upload_leads_to_hubspot(_hubspot_token=None):
+    """
+    Upload all collected leads to HubSpot CRM in one call.
+    Handles field mapping automatically: splits owner name, picks best email,
+    uses trade_name as company. Returns a summary of uploaded contacts.
+    """
+    global _leads_store
+    hubspot_token = _hubspot_token or os.getenv("HUBSPOT_TOKEN", "")
+    if not hubspot_token:
+        return {"error": "HubSpot token not configured. Please set it in Settings."}
+    if not _leads_store:
+        return {"error": "No leads collected yet. Run a lead search first."}
+
+    results = {"uploaded": 0, "skipped": 0, "errors": [], "contacts": []}
+
+    for lead in _leads_store:
+        # ── Pick best email ──
+        email = (lead.get("owner_email") or lead.get("general_email") or "").strip()
+        if not email:
+            results["skipped"] += 1
+            results["errors"].append(f"No email for {lead.get('trade_name', 'unknown')}")
+            continue
+
+        # ── Split owner name into first / last ──
+        raw_name = (lead.get("owner_name") or "").strip()
+        # Names from Sunbiz are "LAST, FIRST MIDDLE" or "FIRST LAST"
+        first_name, last_name = "", ""
+        if raw_name:
+            if "," in raw_name:
+                parts = [p.strip().title() for p in raw_name.split(",", 1)]
+                last_name  = parts[0]
+                first_name = parts[1].split()[0] if parts[1] else ""
+            else:
+                parts = raw_name.title().split()
+                first_name = parts[0] if parts else ""
+                last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+        # ── Company name — prefer trade name (human-readable) over entity name ──
+        company = (lead.get("trade_name") or lead.get("entity_name") or "").strip()
+
+        # ── Phone — prefer owner cell, fall back to business phone ──
+        phone = (lead.get("owner_phone") or lead.get("business_phone") or "").strip()
+
+        properties = {"email": email}
+        if first_name: properties["firstname"]  = first_name
+        if last_name:  properties["lastname"]   = last_name
+        if company:    properties["company"]    = company
+        if phone:      properties["phone"]      = phone
+        if lead.get("website"):  properties["website"]  = lead["website"]
+        if lead.get("linkedin_url"): properties["linkedin_bio"] = lead["linkedin_url"]
+        properties["jobtitle"] = "Owner"
+
+        try:
+            r = requests.post(
+                "https://api.hubapi.com/crm/v3/objects/contacts",
+                json={"properties": properties},
+                headers={
+                    "Authorization": f"Bearer {hubspot_token.strip()}",
+                    "Content-Type":  "application/json",
+                },
+                timeout=20,
+            )
+            data = r.json()
+            if r.status_code in (200, 201):
+                results["uploaded"] += 1
+                results["contacts"].append({"email": email, "company": company, "id": data.get("id")})
+            elif r.status_code == 409:
+                results["skipped"] += 1
+                results["errors"].append(f"Already exists: {email}")
+            else:
+                results["skipped"] += 1
+                results["errors"].append(f"{email}: {data.get('message', str(r.status_code))}")
+        except Exception as e:
+            results["skipped"] += 1
+            results["errors"].append(f"{email}: {str(e)}")
+
+    return results
+
+
 def save_leads_csv(leads):
     """Save enriched leads list to leads.csv."""
     global _leads_store
@@ -1264,8 +1355,9 @@ TOOL_MAP = {
     "web_search":             web_search,
     "apollo_search_people":   apollo_search_people,
     "enrich_leads_batch":     enrich_leads_batch,
-    "get_collected_leads":    get_collected_leads,
-    "sunbiz_lookup":          sunbiz_lookup,
+    "get_collected_leads":      get_collected_leads,
+    "upload_leads_to_hubspot":  upload_leads_to_hubspot,
+    "sunbiz_lookup":            sunbiz_lookup,
     "scrape_website_contact": scrape_website_contact,
     "get_google_reviews":     get_google_reviews,
     "hubspot_create_contact": hubspot_create_contact,
@@ -1281,7 +1373,7 @@ def run_tool(name, inputs, apollo_key="", hubspot_token=""):
     kwargs = dict(inputs)
     if name == "apollo_search_people":
         kwargs["_apollo_key"] = apollo_key
-    elif name == "hubspot_create_contact":
+    elif name in ("hubspot_create_contact", "upload_leads_to_hubspot"):
         kwargs["_hubspot_token"] = hubspot_token
     return fn(**kwargs)
 
@@ -1317,12 +1409,10 @@ Step 3 — Reply with ONE sentence: "Found and enriched N [type] in [location] �
 Never call sunbiz_lookup, scrape_website_contact, or get_google_reviews individually.
 Only use apollo_search_people if the user explicitly asks for it.
 
-**Uploading to HubSpot / working with existing leads:**
-NEVER search for new leads. NEVER enrich leads. Instead:
-Step 1 — Call get_collected_leads() to retrieve the already-enriched leads from this session.
-         The UI will render the table automatically — do NOT describe or list the leads in your response.
-Step 2 — For each lead, call hubspot_create_contact using: owner_name (split into first/last), owner_email, company=trade_name, phone=owner_phone or business_phone, website, job_title="Owner".
-Step 3 — Reply with ONE sentence summarising how many contacts were uploaded.
+**Uploading to HubSpot:**
+NEVER search for new leads. NEVER enrich leads. NEVER call hubspot_create_contact manually.
+Call upload_leads_to_hubspot() — it handles all field mapping automatically.
+Reply with ONE sentence summarising how many contacts were uploaded.
 
 ## Rules
 - Keep ALL post-tool responses to 1 sentence.
