@@ -21,13 +21,12 @@ _perf_store     = []   # performance records [{provider, model, duration_ms, ...
 # Approximate cost per 1M tokens (input, output) in USD
 _MODEL_PRICING = {
     # Anthropic
-    "claude-opus-4-5":            (15.00, 75.00),
+    "claude-opus-4-6":            (5.00,  25.00),
+    "claude-sonnet-4-6":          (3.00,  15.00),
+    "claude-haiku-4-5":           (1.00,   5.00),
+    "claude-opus-4-5":            (5.00,  25.00),
     "claude-sonnet-4-5":          (3.00,  15.00),
-    "claude-haiku-4-5":           (0.80,   4.00),
-    "claude-3-5-sonnet-20241022": (3.00,  15.00),
-    "claude-3-5-haiku-20241022":  (0.80,   4.00),
-    "claude-3-opus-20240229":     (15.00, 75.00),
-    "claude-3-haiku-20240307":    (0.25,   1.25),
+    "claude-opus-4-1":            (15.00, 75.00),
     # Gemini
     "gemini-2.5-flash-preview-04-17": (0.075, 0.30),
     "gemini-2.5-pro-preview-05-06":   (1.25,  5.00),
@@ -1276,12 +1275,12 @@ def run_agent_perplexity(user_message, history, perplexity_key, model,
 
 def run_agent_anthropic(user_message: str, history: list,
                         anthropic_key: str,
-                        model="claude-opus-4-5",
+                        model="claude-opus-4-6",
                         apollo_key="", hubspot_token=""):
     """Agent loop using the Anthropic SDK."""
     import time as _time
     client = anthropic.Anthropic(api_key=anthropic_key)
-    MODEL  = model or "claude-opus-4-5"
+    MODEL  = model or "claude-opus-4-6"
 
     api_messages = []
     for msg in history:
@@ -1353,7 +1352,7 @@ def run_agent_anthropic(user_message: str, history: list,
 
 def run_agent(user_message: str, history: list,
               anthropic_key="", apollo_key="", hubspot_token="",
-              claude_model="claude-opus-4-5",
+              claude_model="claude-opus-4-6",
               gemini_key="", model_provider="anthropic",
               gemini_model="gemini-3-flash-preview",
               perplexity_key="", perplexity_model="sonar-pro"):
@@ -1422,7 +1421,7 @@ def get_config():
         "gemini":         bool(session.get("gemini_key")       or os.getenv("GEMINI_API_KEY")),
         "perplexity":     bool(session.get("perplexity_key")   or os.getenv("PERPLEXITY_API_KEY")),
         "model_provider":   session.get("model_provider",   "anthropic"),
-        "claude_model":     session.get("claude_model",     "claude-opus-4-5"),
+        "claude_model":     session.get("claude_model",     "claude-opus-4-6"),
         "gemini_model":     session.get("gemini_model",     "gemini-3-flash-preview"),
         "perplexity_model": session.get("perplexity_model", "sonar-pro"),
     })
@@ -1464,7 +1463,7 @@ def chat():
     hubspot_token  = session.get("hubspot_token")  or os.getenv("HUBSPOT_TOKEN", "")
     gemini_key       = session.get("gemini_key")       or os.getenv("GEMINI_API_KEY", "")
     model_provider   = session.get("model_provider",   "anthropic")
-    claude_model     = session.get("claude_model",     "claude-opus-4-5")
+    claude_model     = session.get("claude_model",     "claude-opus-4-6")
     gemini_model     = session.get("gemini_model",     "gemini-2.0-flash")
     perplexity_key   = session.get("perplexity_key")   or os.getenv("PERPLEXITY_API_KEY", "")
     perplexity_model = session.get("perplexity_model", "sonar-pro")
