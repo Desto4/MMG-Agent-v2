@@ -6,6 +6,7 @@
     <title>MMG Agent UI</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; }
@@ -21,6 +22,51 @@
             margin-left: 1px;
             color: #14b8a6;
         }
+
+        /* Markdown prose styles */
+        .agent-content h1,.agent-content h2,.agent-content h3 {
+            font-weight: 700; margin: 1rem 0 0.4rem; color: #111827;
+        }
+        .agent-content h1 { font-size: 1.15rem; }
+        .agent-content h2 { font-size: 1.05rem; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.3rem; }
+        .agent-content h3 { font-size: 0.95rem; }
+        .agent-content p  { margin: 0.5rem 0; }
+        .agent-content ul, .agent-content ol { padding-left: 1.4rem; margin: 0.5rem 0; }
+        .agent-content li { margin: 0.25rem 0; }
+        .agent-content strong { font-weight: 600; color: #111827; }
+        .agent-content em { font-style: italic; }
+        .agent-content code {
+            background: #f3f4f6; border-radius: 4px; padding: 0.1em 0.35em;
+            font-family: ui-monospace, monospace; font-size: 0.82em; color: #374151;
+        }
+        .agent-content pre {
+            background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px;
+            padding: 0.75rem 1rem; overflow-x: auto; margin: 0.75rem 0;
+        }
+        .agent-content pre code { background: none; padding: 0; font-size: 0.85em; }
+        .agent-content hr { border: none; border-top: 1px solid #e5e7eb; margin: 1rem 0; }
+        .agent-content blockquote {
+            border-left: 3px solid #14b8a6; padding-left: 0.75rem;
+            color: #6b7280; margin: 0.5rem 0;
+        }
+        /* Markdown tables */
+        .agent-content table {
+            width: 100%; border-collapse: collapse; margin: 0.75rem 0;
+            font-size: 0.82rem; border-radius: 8px; overflow: hidden;
+            border: 1px solid #e5e7eb;
+        }
+        .agent-content thead { background: #f9fafb; }
+        .agent-content th {
+            padding: 0.5rem 0.75rem; text-align: left; font-weight: 600;
+            color: #6b7280; font-size: 0.75rem; text-transform: uppercase;
+            letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;
+        }
+        .agent-content td {
+            padding: 0.5rem 0.75rem; border-bottom: 1px solid #f3f4f6;
+            color: #374151; vertical-align: top;
+        }
+        .agent-content tr:last-child td { border-bottom: none; }
+        .agent-content tr:hover td { background: #f9fafb; }
 
         /* Tool chip pulse */
         @keyframes pulse-bg {
@@ -515,16 +561,21 @@ function appendUserBubble(text) {
     scrollToBottom();
 }
 
+function renderMarkdown(text) {
+    if (typeof marked === 'undefined') return text.replace(/\n/g, '<br>');
+    marked.setOptions({ breaks: true, gfm: true });
+    return marked.parse(text);
+}
+
 function appendAgentMessage(text) {
     const container = document.getElementById('messages-container');
     const div = document.createElement('div');
     div.className = 'flex items-start space-x-4';
-    const safeHtml = text.replace(/\n/g, '<br>');
     div.innerHTML = `
         <div class="bg-teal-500 text-white rounded-lg h-8 w-8 flex items-center justify-center flex-shrink-0 mt-1 text-xs font-bold">M</div>
         <div class="flex-1 min-w-0">
             <p class="text-xs font-semibold text-gray-400 mb-2">MMG Agent</p>
-            <div class="bg-white border border-gray-200 rounded-xl px-5 py-4 text-sm text-gray-700 leading-relaxed shadow-sm agent-content">${safeHtml}</div>
+            <div class="bg-white border border-gray-200 rounded-xl px-5 py-4 text-sm text-gray-700 leading-relaxed shadow-sm agent-content">${renderMarkdown(text)}</div>
         </div>`;
     container.appendChild(div);
     scrollToBottom();
@@ -629,7 +680,7 @@ async function sendMessage(prefill) {
                         agentContentEl.classList.add('typing-cursor');
                     }
                     agentText += evt.content;
-                    agentContentEl.innerHTML = agentText.replace(/\n/g, '<br>');
+                    agentContentEl.innerHTML = renderMarkdown(agentText);
                     scrollToBottom();
 
                 } else if (evt.type === 'tool_start') {
