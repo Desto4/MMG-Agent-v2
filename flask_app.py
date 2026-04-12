@@ -92,49 +92,32 @@ TOOLS = [
         },
     },
     {
-        "name": "sunbiz_lookup",
+        "name": "enrich_leads_batch",
         "description": (
-            "Look up a business in the Florida Sunbiz corporate registry. "
-            "Returns the official entity/corporate name, formation date, years in business, "
-            "active status, registered agent name and address, and principal officers."
+            "Enrich a list of leads all at once with Sunbiz corporate data, "
+            "website contact info (email, Instagram, Facebook), and Google Maps reviews. "
+            "ALWAYS use this instead of calling sunbiz_lookup / scrape_website_contact / "
+            "get_google_reviews individually — it does all three in one call for every lead, "
+            "saving tokens and time. Pass the full leads list from apollo_search_people."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "business_name": {"type": "string", "description": "Business name to search on Sunbiz"},
+                "leads": {
+                    "type": "array",
+                    "description": "List of lead objects from apollo_search_people",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "trade_name": {"type": "string"},
+                            "website":    {"type": "string"},
+                            "city":       {"type": "string"},
+                            "state":      {"type": "string"},
+                        },
+                    },
+                },
             },
-            "required": ["business_name"],
-        },
-    },
-    {
-        "name": "scrape_website_contact",
-        "description": (
-            "Visit a business website and scrape it for: general contact email (info@, contact@, etc.), "
-            "Instagram URL, Facebook URL, and phone numbers found on the page. "
-            "Also checks /contact and /about pages automatically."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "Website URL to scrape"},
-            },
-            "required": ["url"],
-        },
-    },
-    {
-        "name": "get_google_reviews",
-        "description": (
-            "Search the web to find a business's Google review count and average star rating. "
-            "Returns google_rating (e.g. '4.5') and google_review_count (e.g. '128')."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "business_name": {"type": "string"},
-                "city":          {"type": "string"},
-                "state":         {"type": "string"},
-            },
-            "required": ["business_name"],
+            "required": ["leads"],
         },
     },
     {
@@ -713,9 +696,89 @@ def save_outreach_csv(drafts):
         return {"error": str(e)}
 
 
+def enrich_leads_batch(leads):
+    """
+    Enrich every lead in the list with Sunbiz, website contact info, and
+    Google Maps reviews — all in one tool call.  Yields progress via a
+    shared list; returns the fully enriched leads list and saves to CSV.
+    """
+    import concurrent.futures
+
+    enriched = []
+
+    def _enrich_one(lead):
+        result = dict(lead)
+        name  = result.get("trade_name", "")
+        url   = result.get("website", "")
+        city  = result.get("city", "")
+        state = result.get("state", "")
+
+        # 1. Sunbiz
+        try:
+            sb = sunbiz_lookup(name)
+            if sb.get("found"):
+                result["entity_name"]       = sb.get("entity_name", "")
+                result["formation_date"]    = sb.get("date_filed", "")
+                result["years_in_business"] = sb.get("years_in_business", "")
+                result["sunbiz_status"]     = sb.get("sunbiz_status", "")
+                result["sunbiz_url"]        = sb.get("sunbiz_url", "")
+                result["registered_agent"]  = sb.get("registered_agent", "")
+                result["reg_agent_address"] = sb.get("reg_agent_address", "")
+                if sb.get("owner_name") and not result.get("owner_name"):
+                    result["owner_name"] = sb.get("owner_name", "")
+        except Exception:
+            pass
+
+        # 2. Website scrape
+        if url:
+            try:
+                ws = scrape_website_contact(url)
+                result["general_email"] = ws.get("general_email", "")
+                if ws.get("instagram_url"):
+                    result["instagram_url"] = ws["instagram_url"]
+                if ws.get("facebook_url") and not result.get("facebook_url"):
+                    result["facebook_url"] = ws["facebook_url"]
+            except Exception:
+                pass
+
+        # 3. Google reviews
+        try:
+            gr = get_google_reviews(name, city, state)
+            result["google_rating"]       = gr.get("google_rating", "")
+            result["google_review_count"] = gr.get("google_review_count", "")
+        except Exception:
+            pass
+
+        return result
+
+    # Run enrichment in parallel (3 workers to avoid overloading browsers)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(_enrich_one, lead): i for i, lead in enumerate(leads)}
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                enriched.append(future.result())
+            except Exception:
+                pass
+
+    # Sort back to original order by trade_name
+    enriched.sort(key=lambda x: x.get("trade_name", ""))
+
+    # Save to CSV
+    global _leads_store
+    _leads_store = enriched
+    _save_leads_to_file(enriched)
+
+    return {
+        "enriched_leads": enriched,
+        "total": len(enriched),
+        "saved": True,
+    }
+
+
 TOOL_MAP = {
     "web_search":             web_search,
     "apollo_search_people":   apollo_search_people,
+    "enrich_leads_batch":     enrich_leads_batch,
     "sunbiz_lookup":          sunbiz_lookup,
     "scrape_website_contact": scrape_website_contact,
     "get_google_reviews":     get_google_reviews,
@@ -741,18 +804,29 @@ def run_tool(name, inputs, apollo_key="", hubspot_token=""):
 
 SYSTEM_PROMPT = """You are MMG Agent, a lead generation assistant for a commercial real estate broker.
 
-Your workflow for finding and enriching leads:
-1. Use apollo_search_people to get a list of businesses by keyword + location
-2. For each business, use sunbiz_lookup to get the official entity name, formation date, registered agent, and owner
-3. For each business, use scrape_website_contact to get the general email (info@...), Instagram, Facebook, and phone from their website
-4. For each business, use get_google_reviews to get their rating and review count
-5. After enriching all leads, call save_leads_csv with the complete enriched list
-6. Optionally use hubspot_create_contact to push contacts into HubSpot CRM
-7. Optionally draft outreach emails and call save_outreach_csv
+## Workflow
 
-Be efficient: run enrichment steps for each lead before moving to the next.
-Report progress clearly. When a field can't be found, leave it blank — don't guess.
-For Google reviews, mention the rating and count in your summary.
+**Step 1 — Search Apollo**
+Call apollo_search_people with the keyword and location. This returns a list of businesses.
+
+**Step 2 — Enrich all leads in ONE call**
+Pass the FULL leads list to enrich_leads_batch. This single tool call handles Sunbiz,
+website scraping, and Google reviews for every lead simultaneously — do NOT call
+sunbiz_lookup, scrape_website_contact, or get_google_reviews individually.
+
+**Step 3 — Report results**
+Summarize the enriched leads: show a table with trade name, entity name, years in business,
+owner, registered agent, email, Instagram, Facebook, Google rating and review count.
+
+**Step 4 — Optional next steps**
+- Use hubspot_create_contact to push leads to HubSpot CRM
+- Draft outreach emails and call save_outreach_csv
+
+## Rules
+- NEVER call sunbiz_lookup, scrape_website_contact, or get_google_reviews one-by-one.
+  Always use enrich_leads_batch for enrichment.
+- Do not use web_search unless the user explicitly asks you to look something up.
+- When a field can't be found, leave it blank — never guess.
 """
 
 
