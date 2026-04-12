@@ -1353,15 +1353,20 @@ def chat():
     perplexity_model = session.get("perplexity_model", "sonar-pro")
 
     def stream():
-        yield from run_agent(message, history,
-                             anthropic_key=anthropic_key,
-                             apollo_key=apollo_key,
-                             hubspot_token=hubspot_token,
-                             gemini_key=gemini_key,
-                             model_provider=model_provider,
-                             gemini_model=gemini_model,
-                             perplexity_key=perplexity_key,
-                             perplexity_model=perplexity_model)
+        try:
+            yield from run_agent(message, history,
+                                 anthropic_key=anthropic_key,
+                                 apollo_key=apollo_key,
+                                 hubspot_token=hubspot_token,
+                                 gemini_key=gemini_key,
+                                 model_provider=model_provider,
+                                 gemini_model=gemini_model,
+                                 perplexity_key=perplexity_key,
+                                 perplexity_model=perplexity_model)
+        except Exception as e:
+            app.logger.error("Unhandled stream error [%s]: %s", model_provider, e, exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return Response(
         stream(),
@@ -1414,4 +1419,6 @@ def download_outreach():
 
 
 if __name__ == "__main__":
-    app.run(port=8501, debug=False)
+    import logging
+    logging.basicConfig(level=logging.DEBUG)
+    app.run(port=8501, debug=True, use_reloader=False)
