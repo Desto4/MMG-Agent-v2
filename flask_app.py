@@ -1214,7 +1214,7 @@ def enrich_leads_batch(leads):
     _save_leads_to_file(enriched)
 
     return {
-        "enriched_leads": enriched,
+        "leads": enriched,
         "total": len(enriched),
         "saved": True,
     }
