@@ -264,6 +264,19 @@ TOOLS = [
         },
     },
     {
+        "name": "get_collected_leads",
+        "description": (
+            "Return the leads that were already collected and enriched in this session. "
+            "Use this when the user asks to upload leads to HubSpot, export, or do anything "
+            "with previously found leads. Do NOT search for new leads in that case."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
         "name": "save_outreach_csv",
         "description": "Save email drafts to outreach_drafts.csv.",
         "input_schema": {
@@ -1005,6 +1018,14 @@ def hubspot_create_contact(email, first_name="", last_name="", company="",
         return {"error": str(e)}
 
 
+def get_collected_leads():
+    """Return leads already collected in this session."""
+    global _leads_store
+    if not _leads_store:
+        return {"leads": [], "count": 0, "message": "No leads collected yet in this session."}
+    return {"leads": _leads_store, "count": len(_leads_store)}
+
+
 def save_leads_csv(leads):
     """Save enriched leads list to leads.csv."""
     global _leads_store
@@ -1204,6 +1225,7 @@ TOOL_MAP = {
     "web_search":             web_search,
     "apollo_search_people":   apollo_search_people,
     "enrich_leads_batch":     enrich_leads_batch,
+    "get_collected_leads":    get_collected_leads,
     "sunbiz_lookup":          sunbiz_lookup,
     "scrape_website_contact": scrape_website_contact,
     "get_google_reviews":     get_google_reviews,
@@ -1249,23 +1271,23 @@ SYSTEM_PROMPT = """You are MMG Agent, a lead generation assistant for a commerci
 
 ## Workflow
 
-**Step 1 — Find leads**
-Call search_businesses_maps with the keyword, location, and the exact num_results the user requested.
+**Finding new leads:**
+Step 1 — Call search_businesses_maps with the keyword, location, and exact num_results requested.
+Step 2 — Immediately pass the full `leads` array into enrich_leads_batch (fills all 15 fields in parallel).
+Step 3 — Reply with ONE sentence: "Found and enriched N [type] in [location] — results are in the table below."
+Never call sunbiz_lookup, scrape_website_contact, or get_google_reviews individually.
 Only use apollo_search_people if the user explicitly asks for it.
 
-**Step 2 — Enrich in ONE call**
-Immediately pass the full `leads` array from Step 1 into enrich_leads_batch.
-This fills ALL 15 fields above in parallel — do NOT skip it, even if Step 1 already has some data.
-Never call sunbiz_lookup, scrape_website_contact, or get_google_reviews individually.
-
-**Step 3 — Respond briefly**
-One sentence only: "Found and enriched N [business type] in [location] — results are in the table below."
-No lists, no field summaries, no markdown tables. The UI table shows everything.
+**Uploading to HubSpot / working with existing leads:**
+NEVER search for new leads. Instead:
+Step 1 — Call get_collected_leads() to retrieve the already-enriched leads from this session.
+Step 2 — For each lead, call hubspot_create_contact using: owner_name (split into first/last), owner_email, company=trade_name, phone=owner_phone or business_phone, website, job_title="Owner".
+Step 3 — Reply with ONE sentence summarising how many contacts were uploaded.
 
 ## Rules
-- ALWAYS run both Step 1 AND Step 2 for every lead request — never skip enrichment.
-- Keep post-tool responses to 1 sentence.
+- Keep ALL post-tool responses to 1 sentence.
 - Do not use web_search unless the user explicitly asks.
+- No markdown tables, no field lists — the UI handles display.
 """
 
 
