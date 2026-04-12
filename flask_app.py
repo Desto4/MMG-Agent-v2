@@ -1283,6 +1283,7 @@ NEVER search for new leads. Instead:
 Step 1 — Call get_collected_leads() to retrieve the already-enriched leads from this session.
 Step 2 — For each lead, call hubspot_create_contact using: owner_name (split into first/last), owner_email, company=trade_name, phone=owner_phone or business_phone, website, job_title="Owner".
 Step 3 — Reply with ONE sentence summarising how many contacts were uploaded.
+Do NOT call enrich_leads_batch when uploading to HubSpot.
 
 ## Rules
 - Keep ALL post-tool responses to 1 sentence.
