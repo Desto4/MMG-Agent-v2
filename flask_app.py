@@ -67,6 +67,24 @@ LEAD_FIELDS = [
 
 TOOLS = [
     {
+        "name": "search_businesses_maps",
+        "description": (
+            "PRIMARY lead discovery tool. Searches Google Maps for businesses by keyword "
+            "and location using a real browser. Returns structured data for each business: "
+            "trade name, address, city, state, business phone, website URL, Google rating, "
+            "and Google review count. Use this as Step 1 for every lead generation request."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "keyword":     {"type": "string", "description": "Business type, e.g. 'nail salon'"},
+                "location":    {"type": "string", "description": "City and state, e.g. 'Miami, FL'"},
+                "num_results": {"type": "integer", "description": "Number of businesses to return (default 10, max 20)", "default": 10},
+            },
+            "required": ["keyword", "location"],
+        },
+    },
+    {
         "name": "web_search",
         "description": (
             "Search the web for any information — news, business details, market research, "
@@ -85,8 +103,7 @@ TOOLS = [
         "name": "apollo_search_people",
         "description": (
             "Search for companies/organizations on Apollo.io by keyword and location. "
-            "Returns trade name, website, phone, LinkedIn, Facebook, address, industry, "
-            "founded year. Use this as the first step to get a list of businesses."
+            "Only use this if the user explicitly asks for Apollo results."
         ),
         "input_schema": {
             "type": "object",
@@ -219,6 +236,146 @@ TOOLS = [
 
 
 # ── Tool implementations ───────────────────────────────────────────────────────
+
+def search_businesses_maps(keyword, location, num_results=10):
+    """
+    Search Google Maps for businesses using a headless browser.
+    Returns structured lead data: name, address, city, state, phone,
+    website, Google rating, Google review count.
+    """
+    from playwright.sync_api import sync_playwright
+    import time
+
+    num_results = min(int(num_results or 10), 20)
+    query = f"{keyword} {location}"
+    businesses = []
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+            )
+            page = context.new_page()
+
+            page.goto(
+                f"https://www.google.com/maps/search/{quote_plus(query)}",
+                wait_until="domcontentloaded", timeout=30000,
+            )
+            time.sleep(3)
+
+            # Collect result links from the left panel
+            cards = page.query_selector_all("a.hfpxzc")
+            cards = cards[:num_results]
+
+            for card in cards:
+                try:
+                    card.click()
+                    time.sleep(3)
+
+                    html = page.content()
+
+                    # ── Business name ──
+                    name_el = page.query_selector("h1.DUwDvf, h1.fontHeadlineLarge")
+                    name = name_el.inner_text().strip() if name_el else ""
+
+                    # ── Address ──
+                    addr_el = page.query_selector(
+                        '[data-item-id="address"] .Io6YTe, '
+                        'button[data-item-id="address"] .Io6YTe'
+                    )
+                    address = addr_el.inner_text().strip() if addr_el else ""
+
+                    # ── Parse city/state from address ──
+                    city, state = "", ""
+                    if address:
+                        parts = address.split(",")
+                        if len(parts) >= 2:
+                            city = parts[-2].strip()
+                        state_zip = parts[-1].strip() if parts else ""
+                        state_m = re.search(r'\b([A-Z]{2})\b', state_zip)
+                        state = state_m.group(1) if state_m else ""
+
+                    # ── Phone ──
+                    phone_el = page.query_selector(
+                        '[data-item-id*="phone:tel"] .Io6YTe, '
+                        'button[data-tooltip="Copy phone number"] .Io6YTe'
+                    )
+                    phone = phone_el.inner_text().strip() if phone_el else ""
+
+                    # ── Website ──
+                    website_el = page.query_selector(
+                        'a[data-item-id="authority"], '
+                        'a[aria-label*="website" i]'
+                    )
+                    website = ""
+                    if website_el:
+                        href = website_el.get_attribute("href") or ""
+                        if href and not href.startswith("https://www.google"):
+                            website = href.split("?")[0]  # strip tracking params
+
+                    # ── Rating ──
+                    rating_m = re.search(r'aria-label="(\d\.\d)\s*stars?"', html)
+                    rating = rating_m.group(1) if rating_m else ""
+
+                    # ── Review count ──
+                    count_m = re.search(r'aria-label="([\d,]+)\s*reviews?"', html)
+                    count = count_m.group(1).replace(",", "") if count_m else ""
+
+                    if name:
+                        businesses.append({
+                            "trade_name":          name,
+                            "entity_name":         "",
+                            "formation_date":      "",
+                            "years_in_business":   "",
+                            "sunbiz_status":       "",
+                            "sunbiz_url":          "",
+                            "general_email":       "",
+                            "business_phone":      phone,
+                            "address":             address,
+                            "city":                city,
+                            "state":               state,
+                            "website":             website,
+                            "owner_name":          "",
+                            "owner_email":         "",
+                            "owner_phone":         "",
+                            "registered_agent":    "",
+                            "reg_agent_address":   "",
+                            "reg_agent_email":     "",
+                            "reg_agent_phone":     "",
+                            "instagram_url":       "",
+                            "facebook_url":        "",
+                            "google_rating":       rating,
+                            "google_review_count": count,
+                            "industry":            keyword,
+                            "employees":           "",
+                            "linkedin_url":        "",
+                        })
+
+                    # Go back to the results list
+                    page.go_back()
+                    time.sleep(2)
+
+                except Exception:
+                    try:
+                        page.go_back()
+                        time.sleep(1)
+                    except Exception:
+                        pass
+                    continue
+
+            browser.close()
+
+    except Exception as e:
+        return {"error": str(e), "businesses": []}
+
+    return {"leads": businesses, "total": len(businesses)}
+
 
 def web_search(query):
     try:
@@ -851,6 +1008,7 @@ def enrich_leads_batch(leads):
 
 
 TOOL_MAP = {
+    "search_businesses_maps": search_businesses_maps,
     "web_search":             web_search,
     "apollo_search_people":   apollo_search_people,
     "enrich_leads_batch":     enrich_leads_batch,
@@ -881,46 +1039,20 @@ SYSTEM_PROMPT = """You are MMG Agent, a lead generation assistant for a commerci
 
 ## Workflow
 
-**Step 1 — Find leads (default: web search)**
-Use web_search to find businesses. Search for the business type and location,
-e.g. "nail salons Miami FL" or "nail salon owners Miami Florida contact".
-Run 2-3 searches to gather enough business names, websites, and addresses.
-Build a leads list from the search results.
-
-Only use apollo_search_people if the user explicitly asks for Apollo results.
+**Step 1 — Find leads (default: Google Maps)**
+Call search_businesses_maps with the business keyword and location.
+This returns structured data: name, address, phone, website, rating, review count.
+Only use apollo_search_people if the user explicitly asks for it.
 
 **Step 2 — Enrich all leads in ONE call**
-Pass the leads list to enrich_leads_batch. Do NOT call sunbiz_lookup,
-scrape_website_contact, or get_google_reviews individually — enrich_leads_batch
-does all of them in parallel.
+Pass the `leads` array from Step 1's result directly to enrich_leads_batch as the `leads` parameter.
+Do NOT call sunbiz_lookup, scrape_website_contact, or get_google_reviews
+individually — enrich_leads_batch handles all of them in parallel.
 
 **Step 3 — Report results**
-For EVERY lead, display ALL of the following fields (show "—" if not found):
-
-| Field | Value |
-|---|---|
-| Trade Name | |
-| Entity / Corporate Name (Sunbiz) | |
-| Formation Date | |
-| Years in Business | |
-| Sunbiz Status | |
-| General Email | |
-| Owner Name | |
-| Owner Email | |
-| Owner Cell Phone | |
-| Registered Agent | |
-| Registered Agent Address | |
-| Registered Agent Email | |
-| Registered Agent Phone | |
-| Business Phone | |
-| Address | |
-| Website | |
-| Instagram | |
-| Facebook | |
-| Google Rating | |
-| Google Review Count | |
-
-Show one table per lead, separated by a horizontal rule (---).
+The UI automatically renders a rich visual table from the tool results — do NOT repeat the data
+as markdown. Just give a short 1-2 sentence summary like:
+"Found and enriched N nail salons in Miami, FL. All data has been loaded into the table below."
 
 **Step 4 — Optional next steps**
 - hubspot_create_contact to push leads to HubSpot CRM
@@ -928,9 +1060,9 @@ Show one table per lead, separated by a horizontal rule (---).
 
 ## Rules
 - Always use enrich_leads_batch — never call individual enrichment tools.
-- Show ALL fields for every lead, every time — never skip a field.
-- If a field could not be found, show "—". Never leave a row blank or omit it.
+- NEVER print a markdown table of lead fields. The UI table widget handles display automatically.
 - Do not use web_search unless the user explicitly asks.
+- Pass the full leads list from search_businesses_maps directly into enrich_leads_batch as-is.
 """
 
 
