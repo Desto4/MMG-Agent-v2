@@ -989,7 +989,7 @@ def run_agent_anthropic(user_message: str, history: list,
 def run_agent(user_message: str, history: list,
               anthropic_key="", apollo_key="", hubspot_token="",
               gemini_key="", model_provider="anthropic",
-              gemini_model="gemini-2.5-flash-preview-04-17"):
+              gemini_model="gemini-3.0-flash"):
     """Route to the right model provider based on settings."""
 
     if model_provider == "gemini":
@@ -1040,7 +1040,7 @@ def get_config():
         "hubspot":        bool(session.get("hubspot_token")  or os.getenv("HUBSPOT_TOKEN")),
         "gemini":         bool(session.get("gemini_key")     or os.getenv("GEMINI_API_KEY")),
         "model_provider": session.get("model_provider", "anthropic"),
-        "gemini_model":   session.get("gemini_model", "gemini-2.5-flash-preview-04-17"),
+        "gemini_model":   session.get("gemini_model", "gemini-3.0-flash"),
     })
 
 
