@@ -174,20 +174,55 @@
                     <button onclick="toggleSettings()" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
                 </div>
                 <div class="space-y-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Anthropic API Key</label>
-                        <input id="input-anthropic" type="password" placeholder="sk-ant-..."
-                            class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+
+                    <!-- AI Model Provider -->
+                    <div class="bg-gray-50 rounded-xl p-4 space-y-3">
+                        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">AI Model</p>
+                        <div class="flex gap-2">
+                            <button id="btn-provider-anthropic" onclick="setProvider('anthropic')"
+                                class="flex-1 py-2 px-3 rounded-lg text-sm font-medium border transition-colors provider-btn">
+                                🤖 Claude
+                            </button>
+                            <button id="btn-provider-gemini" onclick="setProvider('gemini')"
+                                class="flex-1 py-2 px-3 rounded-lg text-sm font-medium border transition-colors provider-btn">
+                                ✨ Gemini
+                            </button>
+                        </div>
+
+                        <!-- Anthropic key (shown when Claude selected) -->
+                        <div id="anthropic-fields">
+                            <input id="input-anthropic" type="password" placeholder="Anthropic API key  (sk-ant-...)"
+                                class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+                        </div>
+
+                        <!-- Gemini fields (shown when Gemini selected) -->
+                        <div id="gemini-fields" class="space-y-2 hidden">
+                            <input id="input-gemini" type="password" placeholder="Gemini API key  (AIza...)"
+                                class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+                            <select id="input-gemini-model"
+                                class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white">
+                                <option value="gemini-2.0-flash">gemini-2.0-flash (fast, free tier)</option>
+                                <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite (lightest)</option>
+                                <option value="gemini-1.5-pro">gemini-1.5-pro (most capable)</option>
+                                <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+                            </select>
+                            <p class="text-xs text-gray-400">Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" class="text-teal-500 underline">aistudio.google.com</a></p>
+                        </div>
                     </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Apollo API Key</label>
-                        <input id="input-apollo" type="password" placeholder="Apollo key..."
-                            class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">HubSpot Token</label>
-                        <input id="input-hubspot" type="password" placeholder="pat-na1-..."
-                            class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+
+                    <!-- Data connectors -->
+                    <div class="bg-gray-50 rounded-xl p-4 space-y-3">
+                        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Data Connectors</p>
+                        <div>
+                            <label class="block text-xs text-gray-500 mb-1">Apollo API Key</label>
+                            <input id="input-apollo" type="password" placeholder="Apollo key..."
+                                class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-500 mb-1">HubSpot Token</label>
+                            <input id="input-hubspot" type="password" placeholder="pat-na1-..."
+                                class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+                        </div>
                     </div>
                 </div>
                 <div id="config-msg" class="hidden mt-3 text-sm text-teal-600 font-medium"></div>
@@ -681,11 +716,30 @@ async function loadConnectors() {
 }
 
 // ── Settings ───────────────────────────────────────────────────────────────
+let currentProvider = 'anthropic';
+
+function setProvider(p) {
+    currentProvider = p;
+    // Toggle button styles
+    document.querySelectorAll('.provider-btn').forEach(btn => {
+        btn.classList.remove('bg-teal-500', 'text-white', 'border-teal-500');
+        btn.classList.add('bg-white', 'text-gray-600', 'border-gray-200');
+    });
+    const active = document.getElementById(`btn-provider-${p}`);
+    active.classList.add('bg-teal-500', 'text-white', 'border-teal-500');
+    active.classList.remove('bg-white', 'text-gray-600', 'border-gray-200');
+    // Toggle fields
+    document.getElementById('anthropic-fields').classList.toggle('hidden', p !== 'anthropic');
+    document.getElementById('gemini-fields').classList.toggle('hidden', p !== 'gemini');
+}
+
 function toggleSettings() {
     const modal = document.getElementById('settings-modal');
     modal.classList.toggle('hidden');
     if (!modal.classList.contains('hidden')) {
         document.getElementById('config-msg').classList.add('hidden');
+        // Reflect current provider on open
+        setProvider(currentProvider);
     }
 }
 
@@ -696,13 +750,15 @@ document.getElementById('settings-modal').addEventListener('click', function(e) 
 
 async function saveConfig() {
     const body = {
-        anthropic_key: document.getElementById('input-anthropic').value.trim(),
-        apollo_key:    document.getElementById('input-apollo').value.trim(),
-        hubspot_token: document.getElementById('input-hubspot').value.trim(),
+        anthropic_key:  document.getElementById('input-anthropic').value.trim(),
+        apollo_key:     document.getElementById('input-apollo').value.trim(),
+        hubspot_token:  document.getElementById('input-hubspot').value.trim(),
+        gemini_key:     document.getElementById('input-gemini').value.trim(),
+        gemini_model:   document.getElementById('input-gemini-model').value,
+        model_provider: currentProvider,
     };
 
-    // Clear inputs after reading
-    const anyFilled = body.anthropic_key || body.apollo_key || body.hubspot_token;
+    const anyFilled = body.anthropic_key || body.apollo_key || body.hubspot_token || body.gemini_key || body.model_provider;
     if (!anyFilled) {
         const msg = document.getElementById('config-msg');
         msg.textContent = 'Please enter at least one key.';
@@ -717,15 +773,18 @@ async function saveConfig() {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(body)
         });
-        // Clear the inputs
+        // Clear sensitive inputs
         document.getElementById('input-anthropic').value = '';
-        document.getElementById('input-apollo').value = '';
-        document.getElementById('input-hubspot').value = '';
+        document.getElementById('input-apollo').value    = '';
+        document.getElementById('input-hubspot').value   = '';
+        document.getElementById('input-gemini').value    = '';
 
         toggleSettings();
-        toast('API keys saved successfully');
+        const providerLabel = currentProvider === 'gemini'
+            ? `Gemini (${body.gemini_model})` : 'Claude';
+        toast(`Saved — using ${providerLabel}`);
 
-        // Refresh connectors if on that page
+        // Refresh connectors if visible
         if (!document.getElementById('page-connectors').classList.contains('hidden')) {
             loadConnectors();
         }
@@ -733,6 +792,19 @@ async function saveConfig() {
         toast(`Error saving config: ${e.message}`);
     }
 }
+
+// Load saved provider preference on page start
+(async () => {
+    try {
+        const cfg = await fetch('/api/config').then(r => r.json());
+        if (cfg.model_provider) {
+            currentProvider = cfg.model_provider;
+            if (cfg.gemini_model) {
+                document.getElementById('input-gemini-model').value = cfg.gemini_model;
+            }
+        }
+    } catch {}
+})();
 
 // ── Init ───────────────────────────────────────────────────────────────────
 showPage('tasks');

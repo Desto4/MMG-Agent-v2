@@ -830,15 +830,103 @@ owner, registered agent, email, Instagram, Facebook, Google rating and review co
 """
 
 
-def run_agent(user_message: str, history: list,
-              anthropic_key="", apollo_key="", hubspot_token=""):
-    """Generator that yields SSE-formatted strings."""
-    anthropic_key = anthropic_key or os.getenv("ANTHROPIC_API_KEY", "")
-    if not anthropic_key:
-        yield f"data: {json.dumps({'type': 'text', 'content': 'Please configure your Anthropic API key in Settings.'})}\n\n"
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        return
+# ── Convert TOOLS → OpenAI / Gemini format ───────────────────────────────────
 
+def _tools_openai_fmt():
+    """Reformat TOOLS list from Anthropic schema to OpenAI function-calling schema."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name":        t["name"],
+                "description": t["description"],
+                "parameters":  t["input_schema"],
+            },
+        }
+        for t in TOOLS
+    ]
+
+
+# ── Gemini / OpenAI-compatible agent loop ────────────────────────────────────
+
+def run_agent_gemini(user_message: str, history: list,
+                     gemini_key: str, model: str,
+                     apollo_key="", hubspot_token=""):
+    """
+    Agent loop using Google's OpenAI-compatible endpoint.
+    Works with any model on that endpoint: gemini-2.0-flash, gemini-1.5-pro, etc.
+    """
+    from openai import OpenAI as _OAI
+
+    client = _OAI(
+        api_key=gemini_key,
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    )
+
+    oai_tools = _tools_openai_fmt()
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for msg in history:
+        role    = msg.get("role")
+        content = msg.get("content")
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_message})
+
+    try:
+        while True:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=oai_tools,
+                tool_choice="auto",
+            )
+            choice = response.choices[0]
+            msg_obj = choice.message
+
+            if msg_obj.content:
+                yield f"data: {json.dumps({'type': 'text', 'content': msg_obj.content})}\n\n"
+
+            if choice.finish_reason == "stop" or not msg_obj.tool_calls:
+                break
+
+            # Append assistant turn (with tool_calls) to history
+            messages.append(msg_obj)
+
+            tool_results = []
+            for tc in msg_obj.tool_calls:
+                name = tc.function.name
+                try:
+                    inputs = json.loads(tc.function.arguments)
+                except Exception:
+                    inputs = {}
+
+                yield f"data: {json.dumps({'type': 'tool_start', 'name': name})}\n\n"
+                result = run_tool(name, inputs,
+                                  apollo_key=apollo_key,
+                                  hubspot_token=hubspot_token)
+                yield f"data: {json.dumps({'type': 'tool_end', 'name': name, 'result': result})}\n\n"
+
+                tool_results.append({
+                    "role":         "tool",
+                    "tool_call_id": tc.id,
+                    "content":      json.dumps(result),
+                })
+
+            messages.extend(tool_results)
+
+    except Exception as e:
+        yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+
+    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+
+# ── Anthropic agent loop ──────────────────────────────────────────────────────
+
+def run_agent_anthropic(user_message: str, history: list,
+                        anthropic_key: str,
+                        apollo_key="", hubspot_token=""):
+    """Agent loop using the Anthropic SDK."""
     client = anthropic.Anthropic(api_key=anthropic_key)
 
     api_messages = []
@@ -896,6 +984,39 @@ def run_agent(user_message: str, history: list,
     yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
 
+# ── Unified entry point ───────────────────────────────────────────────────────
+
+def run_agent(user_message: str, history: list,
+              anthropic_key="", apollo_key="", hubspot_token="",
+              gemini_key="", model_provider="anthropic",
+              gemini_model="gemini-2.0-flash"):
+    """Route to the right model provider based on settings."""
+
+    if model_provider == "gemini":
+        gemini_key = gemini_key or os.getenv("GEMINI_API_KEY", "")
+        if not gemini_key:
+            yield f"data: {json.dumps({'type': 'text', 'content': 'Please configure your Gemini API key in Settings.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+        yield from run_agent_gemini(user_message, history,
+                                    gemini_key=gemini_key,
+                                    model=gemini_model,
+                                    apollo_key=apollo_key,
+                                    hubspot_token=hubspot_token)
+        return
+
+    # Default: Anthropic
+    anthropic_key = anthropic_key or os.getenv("ANTHROPIC_API_KEY", "")
+    if not anthropic_key:
+        yield f"data: {json.dumps({'type': 'text', 'content': 'Please configure your Anthropic API key in Settings.'})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return
+    yield from run_agent_anthropic(user_message, history,
+                                   anthropic_key=anthropic_key,
+                                   apollo_key=apollo_key,
+                                   hubspot_token=hubspot_token)
+
+
 # ── Flask routes ──────────────────────────────────────────────────────────────
 
 @app.after_request
@@ -914,9 +1035,12 @@ def index():
 @app.route("/api/config", methods=["GET"])
 def get_config():
     return jsonify({
-        "anthropic": bool(session.get("anthropic_key") or os.getenv("ANTHROPIC_API_KEY")),
-        "apollo":    bool(session.get("apollo_key")    or os.getenv("APOLLO_API_KEY")),
-        "hubspot":   bool(session.get("hubspot_token") or os.getenv("HUBSPOT_TOKEN")),
+        "anthropic":      bool(session.get("anthropic_key")  or os.getenv("ANTHROPIC_API_KEY")),
+        "apollo":         bool(session.get("apollo_key")     or os.getenv("APOLLO_API_KEY")),
+        "hubspot":        bool(session.get("hubspot_token")  or os.getenv("HUBSPOT_TOKEN")),
+        "gemini":         bool(session.get("gemini_key")     or os.getenv("GEMINI_API_KEY")),
+        "model_provider": session.get("model_provider", "anthropic"),
+        "gemini_model":   session.get("gemini_model", "gemini-2.0-flash"),
     })
 
 
@@ -924,11 +1048,17 @@ def get_config():
 def save_config():
     data = request.get_json(force=True)
     if data.get("anthropic_key"):
-        session["anthropic_key"] = data["anthropic_key"]
+        session["anthropic_key"]  = data["anthropic_key"]
     if data.get("apollo_key"):
-        session["apollo_key"] = data["apollo_key"]
+        session["apollo_key"]     = data["apollo_key"]
     if data.get("hubspot_token"):
-        session["hubspot_token"] = data["hubspot_token"]
+        session["hubspot_token"]  = data["hubspot_token"]
+    if data.get("gemini_key"):
+        session["gemini_key"]     = data["gemini_key"]
+    if data.get("model_provider"):
+        session["model_provider"] = data["model_provider"]
+    if data.get("gemini_model"):
+        session["gemini_model"]   = data["gemini_model"]
     return jsonify({"ok": True})
 
 
@@ -939,15 +1069,21 @@ def chat():
     history = data.get("history", [])
 
     # Read session BEFORE entering the streaming generator
-    anthropic_key = session.get("anthropic_key") or os.getenv("ANTHROPIC_API_KEY", "")
-    apollo_key    = session.get("apollo_key")     or os.getenv("APOLLO_API_KEY", "")
-    hubspot_token = session.get("hubspot_token")  or os.getenv("HUBSPOT_TOKEN", "")
+    anthropic_key  = session.get("anthropic_key")  or os.getenv("ANTHROPIC_API_KEY", "")
+    apollo_key     = session.get("apollo_key")     or os.getenv("APOLLO_API_KEY", "")
+    hubspot_token  = session.get("hubspot_token")  or os.getenv("HUBSPOT_TOKEN", "")
+    gemini_key     = session.get("gemini_key")     or os.getenv("GEMINI_API_KEY", "")
+    model_provider = session.get("model_provider", "anthropic")
+    gemini_model   = session.get("gemini_model",   "gemini-2.0-flash")
 
     def stream():
         yield from run_agent(message, history,
                              anthropic_key=anthropic_key,
                              apollo_key=apollo_key,
-                             hubspot_token=hubspot_token)
+                             hubspot_token=hubspot_token,
+                             gemini_key=gemini_key,
+                             model_provider=model_provider,
+                             gemini_model=gemini_model)
 
     return Response(
         stream(),
