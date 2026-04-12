@@ -802,14 +802,18 @@ function renderLeadsTable(leads) {
         if (!l.owner_name) s -= 5;
         return Math.max(30, Math.min(99, Math.round(s)));
     }
-    // Parse city from address string "123 Main St, Miami, FL 33101"
+    // Get city/state for display
     function cityOf(l) {
+        // Use dedicated city/state fields first
+        if (l.city && l.state) return l.city + ', ' + l.state;
+        if (l.city) return l.city;
+        if (l.state) return l.state;
+        // Fall back to parsing from address string "123 Main St, Miami, FL 33101"
         const addr = l.address || '';
-        // try to grab city part between last comma pairs
         const parts = addr.split(',').map(s => s.trim());
         if (parts.length >= 3) return parts[parts.length - 2];
         if (parts.length === 2) return parts[0];
-        return addr.split(' ').slice(-3, -2).join('') || '—';
+        return '—';
     }
     // Formation year badge text
     function estBadge(l) {

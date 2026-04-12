@@ -393,46 +393,54 @@ def search_businesses_maps(keyword, location, num_results=10):
                         if href and not href.startswith("https://www.google"):
                             website = href.split("?")[0]
 
-                    # ── Rating ── (try DOM first, then regex fallback)
+                    # ── Rating + Review count ── multi-strategy extraction
                     rating = ""
-                    rating_el = page.query_selector(
-                        'div.F7nice span[aria-hidden="true"], '
-                        'span.ceNzKf, '
-                        '[aria-label*="stars" i], '
-                        '[aria-label*="star" i]'
-                    )
-                    if rating_el:
-                        r_label = rating_el.get_attribute("aria-label") or rating_el.inner_text()
-                        r_m = re.search(r'(\d[\.,]\d)', r_label)
-                        if r_m:
-                            rating = r_m.group(1).replace(",", ".")
-                        else:
-                            # whole-number rating e.g. "5 stars"
-                            r_m2 = re.search(r'(\d)\s*stars?', r_label, re.IGNORECASE)
-                            if r_m2:
-                                rating = r_m2.group(1)
-                    if not rating:
-                        # Regex fallback — cover both "4.5" and "4,5" locales
-                        rating_m = re.search(r'aria-label="(\d[\.,]\d)\s*stars?"', html, re.IGNORECASE)
-                        if rating_m:
-                            rating = rating_m.group(1).replace(",", ".")
+                    count  = ""
 
-                    # ── Review count ── (try DOM first, then regex fallback)
-                    count = ""
-                    count_el = page.query_selector(
-                        'button[aria-label*="reviews" i], '
-                        'span[aria-label*="reviews" i], '
-                        'div[aria-label*="reviews" i]'
-                    )
-                    if count_el:
-                        c_label = count_el.get_attribute("aria-label") or count_el.inner_text()
-                        c_m = re.search(r'([\d,]+)\s*reviews?', c_label, re.IGNORECASE)
-                        if c_m:
-                            count = c_m.group(1).replace(",", "")
+                    # Strategy 1: aria-label on any element containing "stars"
+                    for el in page.query_selector_all('[aria-label]'):
+                        try:
+                            lbl = el.get_attribute("aria-label") or ""
+                            if not rating:
+                                rm = re.search(r'(\d[\.,]\d)\s*stars?', lbl, re.IGNORECASE)
+                                if rm:
+                                    rating = rm.group(1).replace(",", ".")
+                                else:
+                                    rm2 = re.search(r'^(\d)\s*stars?$', lbl.strip(), re.IGNORECASE)
+                                    if rm2:
+                                        rating = rm2.group(1)
+                            if not count:
+                                cm = re.search(r'([\d,]+)\s*reviews?', lbl, re.IGNORECASE)
+                                if cm:
+                                    count = cm.group(1).replace(",", "")
+                            if rating and count:
+                                break
+                        except Exception:
+                            continue
+
+                    # Strategy 2: regex scan on full page HTML
+                    if not rating:
+                        rm = re.search(r'(\d[\.,]\d)\s*stars?', html, re.IGNORECASE)
+                        if rm:
+                            rating = rm.group(1).replace(",", ".")
                     if not count:
-                        count_m = re.search(r'aria-label="([\d,]+)\s*reviews?"', html, re.IGNORECASE)
-                        if count_m:
-                            count = count_m.group(1).replace(",", "")
+                        cm = re.search(r'([\d,]+)\s*reviews?', html, re.IGNORECASE)
+                        if cm:
+                            count = cm.group(1).replace(",", "")
+
+                    # Strategy 3: visible text in known rating container elements
+                    if not rating:
+                        for sel in ('span.ceNzKf', 'div.F7nice > span', 'span.fontBodyMedium'):
+                            try:
+                                el = page.query_selector(sel)
+                                if el:
+                                    txt = el.inner_text().strip()
+                                    rm = re.search(r'(\d[\.,]\d)', txt)
+                                    if rm:
+                                        rating = rm.group(1).replace(",", ".")
+                                        break
+                            except Exception:
+                                continue
 
                     if name:
                         businesses.append({
@@ -938,41 +946,50 @@ def get_google_reviews(business_name, city="", state=""):
             html = page.content()
             browser.close()
 
-        # Extract rating + count via DOM selectors first, then regex fallback
-        rating_el = page.query_selector(
-            'div.F7nice span[aria-hidden="true"], '
-            'span.ceNzKf, '
-            '[aria-label*="stars" i], '
-            '[aria-label*="star" i]'
-        )
-        if rating_el:
-            r_label = rating_el.get_attribute("aria-label") or rating_el.inner_text()
-            r_m = re.search(r'(\d[\.,]\d)', r_label)
-            if r_m:
-                rating = r_m.group(1).replace(",", ".")
-            else:
-                r_m2 = re.search(r'(\d)\s*stars?', r_label, re.IGNORECASE)
-                if r_m2:
-                    rating = r_m2.group(1)
-        if not rating:
-            rating_m = re.search(r'aria-label="(\d[\.,]\d)\s*stars?"', html, re.IGNORECASE)
-            if rating_m:
-                rating = rating_m.group(1).replace(",", ".")
+        # Strategy 1: scan all aria-label attributes
+        for el in page.query_selector_all('[aria-label]'):
+            try:
+                lbl = el.get_attribute("aria-label") or ""
+                if not rating:
+                    rm = re.search(r'(\d[\.,]\d)\s*stars?', lbl, re.IGNORECASE)
+                    if rm:
+                        rating = rm.group(1).replace(",", ".")
+                    else:
+                        rm2 = re.search(r'^(\d)\s*stars?$', lbl.strip(), re.IGNORECASE)
+                        if rm2:
+                            rating = rm2.group(1)
+                if not count:
+                    cm = re.search(r'([\d,]+)\s*reviews?', lbl, re.IGNORECASE)
+                    if cm:
+                        count = cm.group(1).replace(",", "")
+                if rating and count:
+                    break
+            except Exception:
+                continue
 
-        count_el = page.query_selector(
-            'button[aria-label*="reviews" i], '
-            'span[aria-label*="reviews" i], '
-            'div[aria-label*="reviews" i]'
-        )
-        if count_el:
-            c_label = count_el.get_attribute("aria-label") or count_el.inner_text()
-            c_m = re.search(r'([\d,]+)\s*reviews?', c_label, re.IGNORECASE)
-            if c_m:
-                count = c_m.group(1).replace(",", "")
+        # Strategy 2: regex scan on full HTML
+        if not rating:
+            rm = re.search(r'(\d[\.,]\d)\s*stars?', html, re.IGNORECASE)
+            if rm:
+                rating = rm.group(1).replace(",", ".")
         if not count:
-            count_m = re.search(r'aria-label="([\d,]+)\s*reviews?"', html, re.IGNORECASE)
-            if count_m:
-                count = count_m.group(1).replace(",", "")
+            cm = re.search(r'([\d,]+)\s*reviews?', html, re.IGNORECASE)
+            if cm:
+                count = cm.group(1).replace(",", "")
+
+        # Strategy 3: visible text in known containers
+        if not rating:
+            for sel in ('span.ceNzKf', 'div.F7nice > span', 'span.fontBodyMedium'):
+                try:
+                    el = page.query_selector(sel)
+                    if el:
+                        txt = el.inner_text().strip()
+                        rm = re.search(r'(\d[\.,]\d)', txt)
+                        if rm:
+                            rating = rm.group(1).replace(",", ".")
+                            break
+                except Exception:
+                    continue
 
     except Exception:
         pass
