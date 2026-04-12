@@ -31,8 +31,8 @@ _MODEL_PRICING = {
     "gemini-1.5-flash":               (0.075, 0.30),
     "gemini-1.5-pro":                 (1.25,  5.00),
     "gemini-3-flash-preview":         (0.075, 0.30),
-    "gemini-3.1-pro":                 (1.25,  5.00),
-    "gemini-3.1-flash-lite":          (0.075, 0.30),
+    "gemini-3.1-pro-preview":         (1.25,  5.00),
+    "gemini-3.1-flash-lite-preview":  (0.25,  1.50),
     # Perplexity
     "sonar-pro":           (3.00, 15.00),
     "sonar":               (1.00,  1.00),
