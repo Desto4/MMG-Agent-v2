@@ -711,8 +711,8 @@ async function sendMessage(prefill) {
                         if (chip) chip.done = true;
                     }
 
-                    // Render table only after enrichment is complete (not from raw Maps data)
-                    const leadsResult = ['apollo_search_people','enrich_leads_batch']
+                    // Render table after enrichment, Apollo, or get_collected_leads
+                    const leadsResult = ['apollo_search_people','enrich_leads_batch','get_collected_leads']
                         .includes(evt.name) && evt.result?.leads?.length ? evt.result.leads : null;
                     if (leadsResult) {
                         const tableDiv = document.createElement('div');

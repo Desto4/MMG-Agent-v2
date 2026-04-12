@@ -1279,11 +1279,11 @@ Never call sunbiz_lookup, scrape_website_contact, or get_google_reviews individu
 Only use apollo_search_people if the user explicitly asks for it.
 
 **Uploading to HubSpot / working with existing leads:**
-NEVER search for new leads. Instead:
+NEVER search for new leads. NEVER enrich leads. Instead:
 Step 1 — Call get_collected_leads() to retrieve the already-enriched leads from this session.
+         The UI will render the table automatically — do NOT describe or list the leads in your response.
 Step 2 — For each lead, call hubspot_create_contact using: owner_name (split into first/last), owner_email, company=trade_name, phone=owner_phone or business_phone, website, job_title="Owner".
 Step 3 — Reply with ONE sentence summarising how many contacts were uploaded.
-Do NOT call enrich_leads_batch when uploading to HubSpot.
 
 ## Rules
 - Keep ALL post-tool responses to 1 sentence.
