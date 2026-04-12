@@ -1,9 +1,10 @@
 import os
+import re
 import json
 import csv
 import io
 from datetime import datetime
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin, urlparse
 
 import requests
 from flask import Flask, request, session, Response, send_file, jsonify, render_template
@@ -15,6 +16,43 @@ app.secret_key = os.urandom(24)
 # Module-level storage for leads and outreach (per process)
 _leads_store = []
 _outreach_store = []
+
+SCRAPE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+# ── Lead CSV fields ───────────────────────────────────────────────────────────
+
+LEAD_FIELDS = [
+    "trade_name",
+    "entity_name",
+    "formation_date",
+    "years_in_business",
+    "general_email",
+    "owner_name",
+    "owner_email",
+    "owner_phone",
+    "registered_agent",
+    "reg_agent_address",
+    "business_phone",
+    "address",
+    "website",
+    "instagram_url",
+    "facebook_url",
+    "google_review_count",
+    "google_rating",
+    "industry",
+    "employees",
+    "linkedin_url",
+    "sunbiz_url",
+    "sunbiz_status",
+]
 
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
@@ -39,13 +77,14 @@ TOOLS = [
         "name": "apollo_search_people",
         "description": (
             "Search for companies/organizations on Apollo.io by keyword and location. "
-            "Returns company name, website, phone, LinkedIn, address, and industry."
+            "Returns trade name, website, phone, LinkedIn, Facebook, address, industry, "
+            "founded year. Use this as the first step to get a list of businesses."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "keywords":    {"type": "string", "description": "Industry keywords, e.g. 'nail salon'"},
-                "locations":   {"type": "array",  "items": {"type": "string"},
+                "locations":   {"type": "array", "items": {"type": "string"},
                                 "description": "Locations, e.g. ['Miami, FL']"},
                 "num_results": {"type": "integer", "description": "Number of results (max 50)", "default": 20},
             },
@@ -53,26 +92,116 @@ TOOLS = [
         },
     },
     {
-        "name": "hubspot_create_contact",
-        "description": "Create a new contact in HubSpot CRM.",
+        "name": "sunbiz_lookup",
+        "description": (
+            "Look up a business in the Florida Sunbiz corporate registry. "
+            "Returns the official entity/corporate name, formation date, years in business, "
+            "active status, registered agent name and address, and principal officers."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "email":      {"type": "string"},
-                "first_name": {"type": "string"},
-                "last_name":  {"type": "string"},
-                "company":    {"type": "string"},
-                "phone":      {"type": "string"},
-                "website":    {"type": "string"},
-                "job_title":  {"type": "string"},
-                "linkedin":   {"type": "string"},
+                "business_name": {"type": "string", "description": "Business name to search on Sunbiz"},
+            },
+            "required": ["business_name"],
+        },
+    },
+    {
+        "name": "scrape_website_contact",
+        "description": (
+            "Visit a business website and scrape it for: general contact email (info@, contact@, etc.), "
+            "Instagram URL, Facebook URL, and phone numbers found on the page. "
+            "Also checks /contact and /about pages automatically."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Website URL to scrape"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "get_google_reviews",
+        "description": (
+            "Search the web to find a business's Google review count and average star rating. "
+            "Returns google_rating (e.g. '4.5') and google_review_count (e.g. '128')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "business_name": {"type": "string"},
+                "city":          {"type": "string"},
+                "state":         {"type": "string"},
+            },
+            "required": ["business_name"],
+        },
+    },
+    {
+        "name": "hubspot_create_contact",
+        "description": "Create or update a contact in HubSpot CRM with full enriched lead data.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "email":        {"type": "string"},
+                "first_name":   {"type": "string"},
+                "last_name":    {"type": "string"},
+                "company":      {"type": "string"},
+                "phone":        {"type": "string"},
+                "website":      {"type": "string"},
+                "job_title":    {"type": "string"},
+                "linkedin":     {"type": "string"},
             },
             "required": ["email"],
         },
     },
     {
+        "name": "save_leads_csv",
+        "description": (
+            "Save the fully enriched lead list to leads.csv. "
+            "Call this after enriching leads with Sunbiz, website scraping, and Google reviews."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "leads": {
+                    "type": "array",
+                    "description": "List of enriched lead objects",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "trade_name":          {"type": "string"},
+                            "entity_name":         {"type": "string"},
+                            "formation_date":      {"type": "string"},
+                            "years_in_business":   {"type": "string"},
+                            "general_email":       {"type": "string"},
+                            "owner_name":          {"type": "string"},
+                            "owner_email":         {"type": "string"},
+                            "owner_phone":         {"type": "string"},
+                            "registered_agent":    {"type": "string"},
+                            "reg_agent_address":   {"type": "string"},
+                            "business_phone":      {"type": "string"},
+                            "address":             {"type": "string"},
+                            "website":             {"type": "string"},
+                            "instagram_url":       {"type": "string"},
+                            "facebook_url":        {"type": "string"},
+                            "google_review_count": {"type": "string"},
+                            "google_rating":       {"type": "string"},
+                            "industry":            {"type": "string"},
+                            "employees":           {"type": "string"},
+                            "linkedin_url":        {"type": "string"},
+                            "sunbiz_url":          {"type": "string"},
+                            "sunbiz_status":       {"type": "string"},
+                        },
+                    },
+                }
+            },
+            "required": ["leads"],
+        },
+    },
+    {
         "name": "save_outreach_csv",
-        "description": "Save email drafts to a CSV file called outreach_drafts.csv.",
+        "description": "Save email drafts to outreach_drafts.csv.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -108,7 +237,7 @@ def web_search(query):
             results.append(f"Summary: {data['AbstractText']}")
             if data.get("AbstractURL"):
                 results.append(f"Source: {data['AbstractURL']}")
-        for topic in data.get("RelatedTopics", [])[:5]:
+        for topic in data.get("RelatedTopics", [])[:6]:
             if isinstance(topic, dict) and topic.get("Text"):
                 results.append(f"- {topic['Text']}")
                 if topic.get("FirstURL"):
@@ -116,8 +245,7 @@ def web_search(query):
         if data.get("Answer"):
             results.append(f"Answer: {data['Answer']}")
         if not results:
-            search_url = f"https://www.google.com/search?q={quote_plus(query)}"
-            results.append(f"No direct results. Try searching: {search_url}")
+            results.append(f"No direct results. Try: https://www.google.com/search?q={quote_plus(query)}")
         return {"results": "\n".join(results), "query": query}
     except Exception as e:
         return {"error": str(e)}
@@ -148,46 +276,375 @@ def apollo_search_people(keywords=None, locations=None, num_results=20, _apollo_
         data = r.json()
         if "organizations" not in data:
             return {"error": f"Apollo error: {data.get('error', data)}"}
+
         leads = []
         for org in data["organizations"]:
+            # Phone — try multiple fields
             phone = org.get("phone") or ""
             if not phone:
                 pp = org.get("primary_phone") or {}
                 phone = pp.get("sanitized_number") or pp.get("number") or ""
+
+            # Facebook URL — Apollo sometimes returns this
+            fb_url = org.get("facebook_url") or ""
+
+            # Founded year → formation date approximation
+            founded_year = org.get("founded_year") or ""
+            formation_date = f"01/01/{founded_year}" if founded_year else ""
+            years_in_business = ""
+            if founded_year:
+                try:
+                    years_in_business = str(datetime.now().year - int(founded_year))
+                except Exception:
+                    pass
+
             lead = {
-                "company":   org.get("name", ""),
-                "website":   org.get("website_url", ""),
-                "phone":     phone,
-                "linkedin":  org.get("linkedin_url", ""),
-                "industry":  org.get("industry", ""),
-                "city":      org.get("city", ""),
-                "state":     org.get("state", ""),
-                "address":   org.get("raw_address", ""),
-                "employees": org.get("estimated_num_employees", ""),
+                "trade_name":        org.get("name", ""),
+                "entity_name":       "",   # filled by sunbiz_lookup
+                "formation_date":    formation_date,
+                "years_in_business": years_in_business,
+                "general_email":     "",   # filled by scrape_website_contact
+                "owner_name":        "",
+                "owner_email":       "",
+                "owner_phone":       "",
+                "registered_agent":  "",   # filled by sunbiz_lookup
+                "reg_agent_address": "",
+                "business_phone":    phone,
+                "address":           org.get("raw_address", ""),
+                "website":           org.get("website_url", ""),
+                "instagram_url":     "",   # filled by scrape_website_contact
+                "facebook_url":      fb_url,
+                "google_review_count": "",
+                "google_rating":     "",
+                "industry":          org.get("industry", ""),
+                "employees":         str(org.get("estimated_num_employees", "")),
+                "linkedin_url":      org.get("linkedin_url", ""),
+                "sunbiz_url":        "",
+                "sunbiz_status":     "",
             }
             leads.append(lead)
+
         _leads_store = leads
-        # Save to file
         _save_leads_to_file(leads)
         return {"leads": leads, "total": len(leads)}
     except Exception as e:
         return {"error": str(e)}
 
 
-def _save_leads_to_file(leads):
+def sunbiz_lookup(business_name):
+    """
+    Search Florida Sunbiz corporate registry using a headless browser
+    (required to bypass Cloudflare protection on search.sunbiz.org).
+    Returns entity name, formation date, status, registered agent, and owner.
+    """
+    from playwright.sync_api import sync_playwright
+    import time
+
     try:
-        path = os.path.join(os.path.dirname(__file__), "leads.csv")
-        fieldnames = ["company", "website", "phone", "linkedin", "industry", "city", "state", "address", "employees"]
-        with open(path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(leads)
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+            )
+            page = context.new_page()
+
+            # ── Step 1: submit the search form ──
+            page.goto(
+                "https://search.sunbiz.org/Inquiry/CorporationSearch/ByName",
+                wait_until="domcontentloaded", timeout=30000,
+            )
+            time.sleep(0.5)
+            page.fill("#SearchTerm", business_name)
+            page.click("input[type=submit]")
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
+            time.sleep(1.5)
+
+            html = page.content()
+
+            # Collect all result links + their display names
+            result_pairs = re.findall(
+                r'href="(/Inquiry/CorporationSearch/SearchResultDetail[^"]+)"[^>]*>\s*([^<]+?)\s*</a>',
+                html,
+            )
+            if not result_pairs:
+                browser.close()
+                return {"found": False, "searched": business_name}
+
+            # Pick the best-matching result by name overlap
+            search_norm = re.sub(r"[^a-z0-9]", "", business_name.lower())
+            best_href, best_score = result_pairs[0][0], -1
+            for href, name in result_pairs:
+                name_norm = re.sub(r"[^a-z0-9]", "", name.lower().replace("&amp;", ""))
+                score = sum(1 for c in search_norm if c in name_norm)
+                if score > best_score:
+                    best_score = score
+                    best_href = href
+
+            # ── Step 2: load the detail page ──
+            detail_url = "https://search.sunbiz.org" + best_href.replace("&amp;", "&")
+            page.goto(detail_url, wait_until="domcontentloaded", timeout=30000)
+            time.sleep(1.5)
+            html = page.content()
+            browser.close()
+
+        # ── Parse entity type + corporate name ──
+        corp_m = re.search(
+            r'<div[^>]*class="[^"]*corporationName[^"]*"[^>]*>.*?<p>([^<]+)</p>\s*<p>([^<]+)</p>',
+            html, re.DOTALL,
+        )
+        entity_type = corp_m.group(1).strip() if corp_m else ""
+        entity_name = (
+            corp_m.group(2).strip().replace("&amp;", "&") if corp_m else ""
+        )
+
+        # ── Parse filing info (label → span pairs) ──
+        filing = {}
+        for label, value in re.findall(
+            r'<label[^>]*>\s*([^<]+?)\s*</label>\s*<span>\s*([^<]*?)\s*</span>', html
+        ):
+            filing[label.strip()] = value.strip()
+
+        date_filed    = filing.get("Date Filed", "")
+        status        = filing.get("Status", "")
+        doc_number    = filing.get("Document Number", "")
+
+        # ── Years in business ──
+        years_in_business = ""
+        if date_filed:
+            try:
+                filed_dt = datetime.strptime(date_filed, "%m/%d/%Y")
+                years_in_business = str(
+                    round((datetime.now() - filed_dt).days / 365.25, 1)
+                )
+            except Exception:
+                pass
+
+        def _section_text(title, html_body):
+            """Extract visible text from a named detailSection."""
+            m = re.search(
+                rf"<span>\s*{re.escape(title)}\s*</span>(.*?)(?=<div[^>]*class=\"detailSection|$)",
+                html_body, re.DOTALL | re.IGNORECASE,
+            )
+            if not m:
+                return []
+            chunk = m.group(1)
+            chunk = re.sub(r"<br\s*/?>", "\n", chunk)
+            chunk = re.sub(r"<[^>]+>", "", chunk)
+            chunk = chunk.replace("&amp;", "&").replace("&nbsp;", " ")
+            return [l.strip() for l in chunk.splitlines() if l.strip()]
+
+        # ── Registered Agent ──
+        ra_lines = _section_text("Registered Agent Name &amp; Address", html)
+        reg_agent      = ra_lines[0] if ra_lines else ""
+        reg_agent_addr = ", ".join(ra_lines[1:]) if len(ra_lines) > 1 else ""
+
+        # ── Principal Address ──
+        pa_lines       = _section_text("Principal Address", html)
+        principal_addr = ", ".join(pa_lines)
+
+        # ── Officers ──
+        owner_name = ""
+        off_m = re.search(
+            r"<span>\s*Officer/Director Detail\s*</span>(.*?)(?=<div[^>]*class=\"detailSection|$)",
+            html, re.DOTALL | re.IGNORECASE,
+        )
+        if off_m:
+            off_chunk = re.sub(r"<br\s*/?>", "\n", off_m.group(1))
+            off_chunk = re.sub(r"<[^>]+>", "\n", off_chunk)
+            off_chunk = off_chunk.replace("&amp;", "&").replace("&nbsp;", " ")
+            off_lines = [l.strip() for l in off_chunk.splitlines() if l.strip()]
+            # Officer names come after a "Title X" line
+            for i, line in enumerate(off_lines):
+                if line.lower().startswith("title") and i + 1 < len(off_lines):
+                    candidate = off_lines[i + 1]
+                    # Must look like a name (all caps, letters)
+                    if re.match(r"[A-Z][A-Z ,.\-']+$", candidate):
+                        owner_name = candidate
+                        break
+
+        return {
+            "found":             True,
+            "sunbiz_url":        detail_url,
+            "entity_type":       entity_type,
+            "entity_name":       entity_name,
+            "document_number":   doc_number,
+            "date_filed":        date_filed,
+            "years_in_business": years_in_business,
+            "sunbiz_status":     status,
+            "principal_address": principal_addr,
+            "registered_agent":  reg_agent,
+            "reg_agent_address": reg_agent_addr,
+            "owner_name":        owner_name,
+        }
+
+    except Exception as e:
+        return {"error": str(e), "searched": business_name}
+
+
+def scrape_website_contact(url):
+    """Visit a business website and extract email, Instagram, Facebook, phone."""
+    if not url:
+        return {"error": "No URL provided"}
+
+    # Normalise URL
+    if not url.startswith("http"):
+        url = "https://" + url
+
+    emails      = set()
+    instagram   = ""
+    facebook    = ""
+    phones      = set()
+
+    # Pages to attempt
+    base = url.rstrip("/")
+    pages = [base, base + "/contact", base + "/about", base + "/contact-us"]
+
+    for page_url in pages:
+        try:
+            resp = requests.get(
+                page_url, headers=SCRAPE_HEADERS,
+                timeout=10, allow_redirects=True,
+            )
+            if resp.status_code >= 400:
+                continue
+            html = resp.text
+
+            # ── Emails ──
+            found = re.findall(
+                r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b', html
+            )
+            noise = {
+                "example", "sentry", "wixpress", "squarespace", "wordpress",
+                "schema", "domain", "email", "support@sentry", "noreply",
+                "webmaster", "user@",
+            }
+            for e in found:
+                el = e.lower()
+                if not any(n in el for n in noise) and len(el) < 80:
+                    emails.add(el)
+
+            # ── Instagram ──
+            if not instagram:
+                ig = re.search(
+                    r'(?:href|content)="https?://(?:www\.)?instagram\.com/([^/"?#\s]+)',
+                    html, re.IGNORECASE,
+                )
+                if ig and ig.group(1) not in ("p", "explore", "accounts", "stories"):
+                    instagram = f"https://www.instagram.com/{ig.group(1)}"
+
+            # ── Facebook ──
+            if not facebook:
+                fb = re.search(
+                    r'(?:href|content)="https?://(?:www\.)?facebook\.com/([^/"?#\s]+)',
+                    html, re.IGNORECASE,
+                )
+                if fb:
+                    handle = fb.group(1)
+                    skip = {"sharer", "share", "dialog", "plugins", "login", "groups", "events"}
+                    if handle not in skip:
+                        facebook = f"https://www.facebook.com/{handle}"
+
+            # ── Phones ──
+            tel_links = re.findall(r'href="tel:([^"]+)"', html, re.IGNORECASE)
+            for p in tel_links:
+                clean = re.sub(r"[^\d+]", "", p)
+                if len(clean) >= 10:
+                    phones.add(p.strip())
+
+        except Exception:
+            continue
+
+    # Prefer info@, contact@, hello@ style emails as "general email"
+    priority_prefixes = ("info", "contact", "hello", "office", "admin", "mail", "booking")
+    general_email = ""
+    for e in emails:
+        if any(e.startswith(p + "@") for p in priority_prefixes):
+            general_email = e
+            break
+    if not general_email and emails:
+        general_email = sorted(emails)[0]
+
+    return {
+        "general_email":  general_email,
+        "all_emails":     sorted(emails)[:6],
+        "instagram_url":  instagram,
+        "facebook_url":   facebook,
+        "phones":         list(phones)[:3],
+    }
+
+
+def get_google_reviews(business_name, city="", state=""):
+    """
+    Use a headless browser to open Google Maps, click the first result,
+    and extract the business's star rating and Google review count
+    from aria-label attributes in the detail panel.
+    """
+    from playwright.sync_api import sync_playwright
+    import time
+
+    query  = f"{business_name} {city} {state}".strip()
+    rating = ""
+    count  = ""
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+            )
+            page = context.new_page()
+            page.goto(
+                f"https://www.google.com/maps/search/{quote_plus(query)}",
+                wait_until="domcontentloaded", timeout=20000,
+            )
+            time.sleep(2)
+
+            # Click the first result to open the business detail panel
+            first = page.query_selector("a.hfpxzc")
+            if first:
+                first.click()
+                time.sleep(4)
+
+            html = page.content()
+            browser.close()
+
+        # Extract from aria-label attributes set by Google Maps
+        # Rating: aria-label="4.3 stars"
+        rating_m = re.search(
+            r'aria-label="(\d\.\d)\s*stars?"', html, re.IGNORECASE
+        )
+        # Count: aria-label="273 reviews"
+        count_m = re.search(
+            r'aria-label="([\d,]+)\s*reviews?"', html, re.IGNORECASE
+        )
+
+        if rating_m:
+            rating = rating_m.group(1)
+        if count_m:
+            count = count_m.group(1).replace(",", "")
+
     except Exception:
         pass
 
+    return {
+        "google_rating":       rating,
+        "google_review_count": count,
+    }
+
 
 def hubspot_create_contact(email, first_name="", last_name="", company="",
-                            phone="", website="", job_title="", linkedin="", _hubspot_token=None):
+                            phone="", website="", job_title="", linkedin="",
+                            _hubspot_token=None):
     hubspot_token = _hubspot_token or os.getenv("HUBSPOT_TOKEN", "")
     if not hubspot_token:
         return {"error": "HubSpot token not configured. Please set it in Settings."}
@@ -213,11 +670,30 @@ def hubspot_create_contact(email, first_name="", last_name="", company="",
         if r.status_code in (200, 201):
             return {"success": True, "id": data.get("id"), "email": email, "company": company}
         elif r.status_code == 409:
-            return {"success": False, "error": "Contact already exists", "email": email, "company": company}
+            return {"success": False, "error": "Contact already exists", "email": email}
         else:
-            return {"success": False, "error": data.get("message", str(data)), "email": email, "company": company}
+            return {"success": False, "error": data.get("message", str(data)), "email": email}
     except Exception as e:
         return {"error": str(e)}
+
+
+def save_leads_csv(leads):
+    """Save enriched leads list to leads.csv."""
+    global _leads_store
+    _leads_store = leads
+    _save_leads_to_file(leads)
+    return {"success": True, "count": len(leads), "path": "leads.csv"}
+
+
+def _save_leads_to_file(leads):
+    try:
+        path = os.path.join(os.path.dirname(__file__), "leads.csv")
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=LEAD_FIELDS, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(leads)
+    except Exception:
+        pass
 
 
 def save_outreach_csv(drafts):
@@ -226,8 +702,10 @@ def save_outreach_csv(drafts):
     try:
         path = os.path.join(os.path.dirname(__file__), "outreach_drafts.csv")
         with open(path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["name", "email", "subject_line", "email_body"],
-                                    extrasaction="ignore")
+            writer = csv.DictWriter(
+                f, fieldnames=["name", "email", "subject_line", "email_body"],
+                extrasaction="ignore",
+            )
             writer.writeheader()
             writer.writerows(drafts)
         return {"success": True, "path": path, "count": len(drafts)}
@@ -238,7 +716,11 @@ def save_outreach_csv(drafts):
 TOOL_MAP = {
     "web_search":             web_search,
     "apollo_search_people":   apollo_search_people,
+    "sunbiz_lookup":          sunbiz_lookup,
+    "scrape_website_contact": scrape_website_contact,
+    "get_google_reviews":     get_google_reviews,
     "hubspot_create_contact": hubspot_create_contact,
+    "save_leads_csv":         save_leads_csv,
     "save_outreach_csv":      save_outreach_csv,
 }
 
@@ -257,11 +739,26 @@ def run_tool(name, inputs, apollo_key="", hubspot_token=""):
 
 # ── Agentic loop (generator) ──────────────────────────────────────────────────
 
-def run_agent(user_message: str, history: list, anthropic_key="", apollo_key="", hubspot_token=""):
-    """
-    Generator that yields SSE-formatted strings.
-    Events: text, tool_start, tool_end, done, error
-    """
+SYSTEM_PROMPT = """You are MMG Agent, a lead generation assistant for a commercial real estate broker.
+
+Your workflow for finding and enriching leads:
+1. Use apollo_search_people to get a list of businesses by keyword + location
+2. For each business, use sunbiz_lookup to get the official entity name, formation date, registered agent, and owner
+3. For each business, use scrape_website_contact to get the general email (info@...), Instagram, Facebook, and phone from their website
+4. For each business, use get_google_reviews to get their rating and review count
+5. After enriching all leads, call save_leads_csv with the complete enriched list
+6. Optionally use hubspot_create_contact to push contacts into HubSpot CRM
+7. Optionally draft outreach emails and call save_outreach_csv
+
+Be efficient: run enrichment steps for each lead before moving to the next.
+Report progress clearly. When a field can't be found, leave it blank — don't guess.
+For Google reviews, mention the rating and count in your summary.
+"""
+
+
+def run_agent(user_message: str, history: list,
+              anthropic_key="", apollo_key="", hubspot_token=""):
+    """Generator that yields SSE-formatted strings."""
     anthropic_key = anthropic_key or os.getenv("ANTHROPIC_API_KEY", "")
     if not anthropic_key:
         yield f"data: {json.dumps({'type': 'text', 'content': 'Please configure your Anthropic API key in Settings.'})}\n\n"
@@ -270,17 +767,9 @@ def run_agent(user_message: str, history: list, anthropic_key="", apollo_key="",
 
     client = anthropic.Anthropic(api_key=anthropic_key)
 
-    system = (
-        "You are MMG Agent, a lead generation assistant. You help users find prospects using Apollo, "
-        "enrich their data, load them into HubSpot CRM, and draft outreach emails. "
-        "Be concise and action-oriented. When asked to perform a step, do it immediately "
-        "using the available tools. After each tool call, report what happened."
-    )
-
-    # Build API messages from history
     api_messages = []
     for msg in history:
-        role = msg.get("role")
+        role    = msg.get("role")
         content = msg.get("content")
         if role in ("user", "assistant") and content:
             api_messages.append({"role": role, "content": content})
@@ -289,14 +778,14 @@ def run_agent(user_message: str, history: list, anthropic_key="", apollo_key="",
     try:
         while True:
             response = client.messages.create(
-                model="claude-opus-4-6",
+                model="claude-opus-4-5",
                 max_tokens=4096,
-                system=system,
+                system=SYSTEM_PROMPT,
                 tools=TOOLS,
                 messages=api_messages,
             )
 
-            full_text = ""
+            full_text  = ""
             tool_calls = []
             for block in response.content:
                 if block.type == "text":
@@ -315,7 +804,9 @@ def run_agent(user_message: str, history: list, anthropic_key="", apollo_key="",
             tool_results = []
             for tc in tool_calls:
                 yield f"data: {json.dumps({'type': 'tool_start', 'name': tc.name})}\n\n"
-                result = run_tool(tc.name, tc.input, apollo_key=apollo_key, hubspot_token=hubspot_token)
+                result = run_tool(tc.name, tc.input,
+                                  apollo_key=apollo_key,
+                                  hubspot_token=hubspot_token)
                 yield f"data: {json.dumps({'type': 'tool_end', 'name': tc.name, 'result': result})}\n\n"
                 tool_results.append({
                     "type":        "tool_result",
@@ -335,7 +826,7 @@ def run_agent(user_message: str, history: list, anthropic_key="", apollo_key="",
 
 @app.after_request
 def add_cors(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Origin"]  = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
@@ -369,15 +860,14 @@ def save_config():
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    data = request.get_json(force=True)
+    data    = request.get_json(force=True)
     message = data.get("message", "")
     history = data.get("history", [])
 
-    # Read session values NOW, before entering the streaming generator
-    # (Flask session is not available inside a Response generator)
-    anthropic_key  = session.get("anthropic_key")  or os.getenv("ANTHROPIC_API_KEY", "")
-    apollo_key     = session.get("apollo_key")     or os.getenv("APOLLO_API_KEY", "")
-    hubspot_token  = session.get("hubspot_token")  or os.getenv("HUBSPOT_TOKEN", "")
+    # Read session BEFORE entering the streaming generator
+    anthropic_key = session.get("anthropic_key") or os.getenv("ANTHROPIC_API_KEY", "")
+    apollo_key    = session.get("apollo_key")     or os.getenv("APOLLO_API_KEY", "")
+    hubspot_token = session.get("hubspot_token")  or os.getenv("HUBSPOT_TOKEN", "")
 
     def stream():
         yield from run_agent(message, history,
@@ -385,8 +875,11 @@ def chat():
                              apollo_key=apollo_key,
                              hubspot_token=hubspot_token)
 
-    return Response(stream(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return Response(
+        stream(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.route("/api/download/leads")
@@ -395,13 +888,11 @@ def download_leads():
     if os.path.exists(path):
         return send_file(path, mimetype="text/csv",
                          as_attachment=True, download_name="leads.csv")
-    # Build from memory
     global _leads_store
     if not _leads_store:
         return jsonify({"error": "No leads available"}), 404
     output = io.StringIO()
-    fieldnames = ["company", "website", "phone", "linkedin", "industry", "city", "state", "address", "employees"]
-    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer = csv.DictWriter(output, fieldnames=LEAD_FIELDS, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(_leads_store)
     return Response(
@@ -421,8 +912,10 @@ def download_outreach():
     if not _outreach_store:
         return jsonify({"error": "No outreach drafts available"}), 404
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=["name", "email", "subject_line", "email_body"],
-                            extrasaction="ignore")
+    writer = csv.DictWriter(
+        output, fieldnames=["name", "email", "subject_line", "email_body"],
+        extrasaction="ignore",
+    )
     writer.writeheader()
     writer.writerows(_outreach_store)
     return Response(
