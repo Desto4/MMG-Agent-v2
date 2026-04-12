@@ -1083,21 +1083,15 @@ def _tools_openai_fmt():
     ]
 
 
-# ── Gemini / OpenAI-compatible agent loop ────────────────────────────────────
+# ── Generic OpenAI-compatible agent loop ─────────────────────────────────────
 
-def run_agent_gemini(user_message: str, history: list,
-                     gemini_key: str, model: str,
-                     apollo_key="", hubspot_token=""):
-    """
-    Agent loop using Google's OpenAI-compatible endpoint.
-    Works with any model on that endpoint: gemini-2.0-flash, gemini-1.5-pro, etc.
-    """
+def _run_agent_openai_compat(user_message: str, history: list,
+                              api_key: str, model: str, base_url: str,
+                              apollo_key="", hubspot_token=""):
+    """Shared agent loop for any OpenAI-compatible endpoint (Gemini, Perplexity, etc.)."""
     from openai import OpenAI as _OAI
 
-    client = _OAI(
-        api_key=gemini_key,
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-    )
+    client = _OAI(api_key=api_key, base_url=base_url)
 
     oai_tools = _tools_openai_fmt()
 
@@ -1155,6 +1149,30 @@ def run_agent_gemini(user_message: str, history: list,
         yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
 
     yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+
+def run_agent_gemini(user_message, history, gemini_key, model,
+                     apollo_key="", hubspot_token=""):
+    yield from _run_agent_openai_compat(
+        user_message, history,
+        api_key=gemini_key,
+        model=model,
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        apollo_key=apollo_key,
+        hubspot_token=hubspot_token,
+    )
+
+
+def run_agent_perplexity(user_message, history, perplexity_key, model,
+                         apollo_key="", hubspot_token=""):
+    yield from _run_agent_openai_compat(
+        user_message, history,
+        api_key=perplexity_key,
+        model=model,
+        base_url="https://api.perplexity.ai/",
+        apollo_key=apollo_key,
+        hubspot_token=hubspot_token,
+    )
 
 
 # ── Anthropic agent loop ──────────────────────────────────────────────────────
@@ -1225,7 +1243,8 @@ def run_agent_anthropic(user_message: str, history: list,
 def run_agent(user_message: str, history: list,
               anthropic_key="", apollo_key="", hubspot_token="",
               gemini_key="", model_provider="anthropic",
-              gemini_model="gemini-3-flash-preview"):
+              gemini_model="gemini-3-flash-preview",
+              perplexity_key="", perplexity_model="sonar-pro"):
     """Route to the right model provider based on settings."""
 
     if model_provider == "gemini":
@@ -1239,6 +1258,19 @@ def run_agent(user_message: str, history: list,
                                     model=gemini_model,
                                     apollo_key=apollo_key,
                                     hubspot_token=hubspot_token)
+        return
+
+    if model_provider == "perplexity":
+        perplexity_key = perplexity_key or os.getenv("PERPLEXITY_API_KEY", "")
+        if not perplexity_key:
+            yield f"data: {json.dumps({'type': 'text', 'content': 'Please configure your Perplexity API key in Settings.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+        yield from run_agent_perplexity(user_message, history,
+                                        perplexity_key=perplexity_key,
+                                        model=perplexity_model,
+                                        apollo_key=apollo_key,
+                                        hubspot_token=hubspot_token)
         return
 
     # Default: Anthropic
@@ -1274,9 +1306,11 @@ def get_config():
         "anthropic":      bool(session.get("anthropic_key")  or os.getenv("ANTHROPIC_API_KEY")),
         "apollo":         bool(session.get("apollo_key")     or os.getenv("APOLLO_API_KEY")),
         "hubspot":        bool(session.get("hubspot_token")  or os.getenv("HUBSPOT_TOKEN")),
-        "gemini":         bool(session.get("gemini_key")     or os.getenv("GEMINI_API_KEY")),
+        "gemini":         bool(session.get("gemini_key")       or os.getenv("GEMINI_API_KEY")),
+        "perplexity":     bool(session.get("perplexity_key")   or os.getenv("PERPLEXITY_API_KEY")),
         "model_provider": session.get("model_provider", "anthropic"),
-        "gemini_model":   session.get("gemini_model", "gemini-3-flash-preview"),
+        "gemini_model":   session.get("gemini_model",   "gemini-3-flash-preview"),
+        "perplexity_model": session.get("perplexity_model", "sonar-pro"),
     })
 
 
@@ -1290,11 +1324,15 @@ def save_config():
     if data.get("hubspot_token"):
         session["hubspot_token"]  = data["hubspot_token"]
     if data.get("gemini_key"):
-        session["gemini_key"]     = data["gemini_key"]
+        session["gemini_key"]       = data["gemini_key"]
     if data.get("model_provider"):
-        session["model_provider"] = data["model_provider"]
+        session["model_provider"]   = data["model_provider"]
     if data.get("gemini_model"):
-        session["gemini_model"]   = data["gemini_model"]
+        session["gemini_model"]     = data["gemini_model"]
+    if data.get("perplexity_key"):
+        session["perplexity_key"]   = data["perplexity_key"]
+    if data.get("perplexity_model"):
+        session["perplexity_model"] = data["perplexity_model"]
     return jsonify({"ok": True})
 
 
@@ -1308,9 +1346,11 @@ def chat():
     anthropic_key  = session.get("anthropic_key")  or os.getenv("ANTHROPIC_API_KEY", "")
     apollo_key     = session.get("apollo_key")     or os.getenv("APOLLO_API_KEY", "")
     hubspot_token  = session.get("hubspot_token")  or os.getenv("HUBSPOT_TOKEN", "")
-    gemini_key     = session.get("gemini_key")     or os.getenv("GEMINI_API_KEY", "")
-    model_provider = session.get("model_provider", "anthropic")
-    gemini_model   = session.get("gemini_model",   "gemini-2.0-flash")
+    gemini_key       = session.get("gemini_key")       or os.getenv("GEMINI_API_KEY", "")
+    model_provider   = session.get("model_provider",   "anthropic")
+    gemini_model     = session.get("gemini_model",     "gemini-2.0-flash")
+    perplexity_key   = session.get("perplexity_key")   or os.getenv("PERPLEXITY_API_KEY", "")
+    perplexity_model = session.get("perplexity_model", "sonar-pro")
 
     def stream():
         yield from run_agent(message, history,
@@ -1319,7 +1359,9 @@ def chat():
                              hubspot_token=hubspot_token,
                              gemini_key=gemini_key,
                              model_provider=model_provider,
-                             gemini_model=gemini_model)
+                             gemini_model=gemini_model,
+                             perplexity_key=perplexity_key,
+                             perplexity_model=perplexity_model)
 
     return Response(
         stream(),

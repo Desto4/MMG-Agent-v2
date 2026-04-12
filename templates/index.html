@@ -178,7 +178,7 @@
                     <!-- AI Model Provider -->
                     <div class="bg-gray-50 rounded-xl p-4 space-y-3">
                         <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">AI Model</p>
-                        <div class="flex gap-2">
+                        <div class="flex gap-2 flex-wrap">
                             <button id="btn-provider-anthropic" onclick="setProvider('anthropic')"
                                 class="flex-1 py-2 px-3 rounded-lg text-sm font-medium border transition-colors provider-btn">
                                 🤖 Claude
@@ -186,6 +186,10 @@
                             <button id="btn-provider-gemini" onclick="setProvider('gemini')"
                                 class="flex-1 py-2 px-3 rounded-lg text-sm font-medium border transition-colors provider-btn">
                                 ✨ Gemini
+                            </button>
+                            <button id="btn-provider-perplexity" onclick="setProvider('perplexity')"
+                                class="flex-1 py-2 px-3 rounded-lg text-sm font-medium border transition-colors provider-btn">
+                                🔍 Perplexity
                             </button>
                         </div>
 
@@ -209,6 +213,20 @@
                                 <option value="gemini-1.5-pro">gemini-1.5-pro</option>
                             </select>
                             <p class="text-xs text-gray-400">Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" class="text-teal-500 underline">aistudio.google.com</a></p>
+                        </div>
+
+                        <!-- Perplexity fields (shown when Perplexity selected) -->
+                        <div id="perplexity-fields" class="space-y-2 hidden">
+                            <input id="input-perplexity" type="password" placeholder="Perplexity API key  (pplx-...)"
+                                class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+                            <select id="input-perplexity-model"
+                                class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white">
+                                <option value="sonar-pro">sonar-pro (best)</option>
+                                <option value="sonar">sonar</option>
+                                <option value="sonar-reasoning-pro">sonar-reasoning-pro</option>
+                                <option value="sonar-reasoning">sonar-reasoning</option>
+                            </select>
+                            <p class="text-xs text-gray-400">Get a key at <a href="https://www.perplexity.ai/settings/api" target="_blank" class="text-teal-500 underline">perplexity.ai/settings/api</a></p>
                         </div>
                     </div>
 
@@ -859,6 +877,7 @@ function setProvider(p) {
     // Toggle fields
     document.getElementById('anthropic-fields').classList.toggle('hidden', p !== 'anthropic');
     document.getElementById('gemini-fields').classList.toggle('hidden', p !== 'gemini');
+    document.getElementById('perplexity-fields').classList.toggle('hidden', p !== 'perplexity');
 }
 
 function toggleSettings() {
@@ -881,12 +900,14 @@ async function saveConfig() {
         anthropic_key:  document.getElementById('input-anthropic').value.trim(),
         apollo_key:     document.getElementById('input-apollo').value.trim(),
         hubspot_token:  document.getElementById('input-hubspot').value.trim(),
-        gemini_key:     document.getElementById('input-gemini').value.trim(),
-        gemini_model:   document.getElementById('input-gemini-model').value,
-        model_provider: currentProvider,
+        gemini_key:        document.getElementById('input-gemini').value.trim(),
+        gemini_model:      document.getElementById('input-gemini-model').value,
+        perplexity_key:    document.getElementById('input-perplexity').value.trim(),
+        perplexity_model:  document.getElementById('input-perplexity-model').value,
+        model_provider:    currentProvider,
     };
 
-    const anyFilled = body.anthropic_key || body.apollo_key || body.hubspot_token || body.gemini_key || body.model_provider;
+    const anyFilled = body.anthropic_key || body.apollo_key || body.hubspot_token || body.gemini_key || body.perplexity_key || body.model_provider;
     if (!anyFilled) {
         const msg = document.getElementById('config-msg');
         msg.textContent = 'Please enter at least one key.';
@@ -905,11 +926,15 @@ async function saveConfig() {
         document.getElementById('input-anthropic').value = '';
         document.getElementById('input-apollo').value    = '';
         document.getElementById('input-hubspot').value   = '';
-        document.getElementById('input-gemini').value    = '';
+        document.getElementById('input-gemini').value       = '';
+        document.getElementById('input-perplexity').value   = '';
 
         toggleSettings();
         const providerLabel = currentProvider === 'gemini'
-            ? `Gemini (${body.gemini_model})` : 'Claude';
+            ? `Gemini (${body.gemini_model})`
+            : currentProvider === 'perplexity'
+            ? `Perplexity (${body.perplexity_model})`
+            : 'Claude';
         toast(`Saved — using ${providerLabel}`);
 
         // Refresh connectors if visible
