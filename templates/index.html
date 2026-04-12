@@ -854,14 +854,80 @@ function renderLeadsTable(leads) {
                 '★'.repeat(full) + (half ? '½' : '') + '<span class="text-gray-200">' + '★'.repeat(empty) + '</span></span>';
         })() : '';
 
+        const rowId = `lead-detail-${i}-${Date.now()}`;
+        const fbRaw = l.facebook_url || '';
+
+        // Detail panel — all 15 fields
+        const detailPanel = `
+        <tr id="${rowId}" class="hidden bg-slate-50 border-b border-gray-100">
+            <td colspan="6" class="px-5 py-4">
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-3 text-xs">
+                    <div class="col-span-2 md:col-span-3 pb-1 mb-1 border-b border-gray-200">
+                        <span class="font-semibold text-gray-700 text-[11px] uppercase tracking-wide">Full Lead Details</span>
+                    </div>
+                    ${[
+                        ['Trade Name',        l.trade_name],
+                        ['Entity Name (Sunbiz)', l.entity_name],
+                        ['Formation Date',    l.formation_date],
+                        ['Years in Business', l.years_in_business],
+                        ['Sunbiz Status',     l.sunbiz_status],
+                        ['General Email',     l.general_email],
+                        ['Business Phone',    l.business_phone],
+                        ['Address',           l.address],
+                        ['Website',           l.website ? `<a href="${escHtml(l.website)}" target="_blank" class="text-teal-600 underline">${escHtml(l.website)}</a>` : ''],
+                        ['Instagram',         l.instagram_url ? `<a href="${escHtml(l.instagram_url)}" target="_blank" class="text-pink-500 underline">${escHtml(l.instagram_url)}</a>` : ''],
+                        ['Facebook',          l.facebook_url ? `<a href="${escHtml(l.facebook_url)}" target="_blank" class="text-blue-600 underline">${escHtml(l.facebook_url)}</a>` : ''],
+                        ['Google Rating',     l.google_rating ? `${l.google_rating} ★ (${l.google_review_count || 0} reviews)` : ''],
+                    ].map(([label, val]) => `
+                        <div>
+                            <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-0.5">${label}</div>
+                            <div class="text-gray-700">${val || '<span class="text-gray-300">—</span>'}</div>
+                        </div>`).join('')}
+                    <!-- Owner section -->
+                    <div class="col-span-2 md:col-span-3 pt-2 mt-1 border-t border-gray-200">
+                        <span class="font-semibold text-gray-700 text-[11px] uppercase tracking-wide">Owner</span>
+                    </div>
+                    ${[
+                        ['Owner Name',  l.owner_name],
+                        ['Owner Email', l.owner_email],
+                        ['Owner Phone', l.owner_phone],
+                    ].map(([label, val]) => `
+                        <div>
+                            <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-0.5">${label}</div>
+                            <div class="text-gray-700">${val ? escHtml(val) : '<span class="text-gray-300">—</span>'}</div>
+                        </div>`).join('')}
+                    <!-- Registered Agent section -->
+                    <div class="col-span-2 md:col-span-3 pt-2 mt-1 border-t border-gray-200">
+                        <span class="font-semibold text-gray-700 text-[11px] uppercase tracking-wide">Registered Agent</span>
+                    </div>
+                    ${[
+                        ['Name',    l.registered_agent],
+                        ['Address', l.reg_agent_address],
+                        ['Email',   l.reg_agent_email],
+                        ['Phone',   l.reg_agent_phone],
+                    ].map(([label, val]) => `
+                        <div>
+                            <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-0.5">${label}</div>
+                            <div class="text-gray-700">${val ? escHtml(val) : '<span class="text-gray-300">—</span>'}</div>
+                        </div>`).join('')}
+                </div>
+            </td>
+        </tr>`;
+
         return `
-        <tr class="border-b border-gray-100 hover:bg-slate-50 transition-colors">
+        <tr class="border-b border-gray-100 hover:bg-slate-50 transition-colors cursor-pointer"
+            onclick="document.getElementById('${rowId}').classList.toggle('hidden')">
             <td class="px-4 py-3 max-w-[220px]">
-                <div class="font-semibold text-gray-900 text-sm leading-tight">${tradeName}</div>
-                ${entityName && entityName !== tradeName ? `<div class="text-xs text-gray-400 mt-0.5">${entityName}</div>` : ''}
-                ${badge ? `<div class="mt-1.5">
-                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-teal-50 text-teal-700 border border-teal-100">${badge}</span>
-                </div>` : ''}
+                <div class="flex items-start gap-2">
+                    <div>
+                        <div class="font-semibold text-gray-900 text-sm leading-tight">${tradeName}</div>
+                        ${entityName && entityName !== tradeName ? `<div class="text-xs text-gray-400 mt-0.5">${entityName}</div>` : ''}
+                        ${badge ? `<div class="mt-1.5">
+                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-teal-50 text-teal-700 border border-teal-100">${badge}</span>
+                        </div>` : ''}
+                    </div>
+                    <i class="fa-solid fa-chevron-down text-gray-300 text-[10px] mt-1.5 flex-shrink-0"></i>
+                </div>
             </td>
             <td class="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
                 <span class="inline-flex items-center gap-1">
@@ -879,11 +945,11 @@ function renderLeadsTable(leads) {
                 </div>` : ''}
                 ${website ? `<div class="flex items-center gap-1.5">
                     <svg class="w-3 h-3 text-gray-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M12.586 4.586a2 2 0 112.828 2.828l-3 3a2 2 0 01-2.828 0 1 1 0 00-1.414 1.414 4 4 0 005.656 0l3-3a4 4 0 00-5.656-5.656l-1.5 1.5a1 1 0 101.414 1.414l1.5-1.5zm-5 5a2 2 0 012.828 0 1 1 0 101.414-1.414 4 4 0 00-5.656 0l-3 3a4 4 0 105.656 5.656l1.5-1.5a1 1 0 10-1.414-1.414l-1.5 1.5a2 2 0 11-2.828-2.828l3-3z" clip-rule="evenodd"/></svg>
-                    <a href="${escHtml(l.website)}" target="_blank" class="text-teal-600 hover:text-teal-800 hover:underline truncate max-w-[130px] block">${escHtml(website)}</a>
+                    <a href="${escHtml(l.website)}" target="_blank" class="text-teal-600 hover:text-teal-800 hover:underline truncate max-w-[130px] block" onclick="event.stopPropagation()">${escHtml(website)}</a>
                 </div>` : ''}
                 ${igHandle ? `<div class="flex items-center gap-1.5 text-pink-500">
                     <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z"/></svg>
-                    <a href="${escHtml(igRaw)}" target="_blank" class="hover:underline truncate max-w-[130px] block">${escHtml(igHandle)}</a>
+                    <a href="${escHtml(igRaw)}" target="_blank" class="hover:underline truncate max-w-[130px] block" onclick="event.stopPropagation()">${escHtml(igHandle)}</a>
                 </div>` : ''}
                 ${!phone && !website && !igHandle ? '<span class="text-gray-300">—</span>' : ''}
             </td>
@@ -896,7 +962,8 @@ function renderLeadsTable(leads) {
                     ${reviews ? `<div class="text-[10px] text-gray-400">(${reviews} reviews)</div>` : ''}
                 </div>` : '<span class="text-gray-300 text-xs">—</span>'}
             </td>
-        </tr>`;
+        </tr>
+        ${detailPanel}`;
     }).join('');
 
     return `
@@ -920,7 +987,7 @@ function renderLeadsTable(leads) {
                 <table class="w-full text-left">
                     <thead class="bg-gray-50 border-b border-gray-100">
                         <tr>
-                            <th class="px-4 py-2.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Business / Entity</th>
+                            <th class="px-4 py-2.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Business / Entity <span class="normal-case font-normal text-gray-300">(click to expand)</span></th>
                             <th class="px-4 py-2.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Location</th>
                             <th class="px-4 py-2.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Score</th>
                             <th class="px-4 py-2.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Contact</th>
