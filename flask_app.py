@@ -314,19 +314,26 @@ def search_businesses_maps(keyword, location, num_results=10):
             )
             page = context.new_page()
 
-            page.goto(
-                f"https://www.google.com/maps/search/{quote_plus(query)}",
-                wait_until="domcontentloaded", timeout=30000,
-            )
+            search_url = f"https://www.google.com/maps/search/{quote_plus(query)}"
+            page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
             time.sleep(3)
 
-            # Collect result links from the left panel
+            # ── Collect card URLs upfront (before any navigation makes them stale) ──
+            # Fetch extra cards as buffer in case some fail
+            fetch_count = num_results + 3
             cards = page.query_selector_all("a.hfpxzc")
-            cards = cards[:num_results]
+            card_urls = []
+            for c in cards[:fetch_count]:
+                href = c.get_attribute("href") or ""
+                if href and href.startswith("https://"):
+                    card_urls.append(href)
 
-            for card in cards:
+            for url in card_urls:
+                if len(businesses) >= num_results:
+                    break
                 try:
-                    card.click()
+                    # Navigate directly by URL — no stale element issues
+                    page.goto(url, wait_until="domcontentloaded", timeout=20000)
                     time.sleep(3)
 
                     html = page.content()
@@ -368,7 +375,7 @@ def search_businesses_maps(keyword, location, num_results=10):
                     if website_el:
                         href = website_el.get_attribute("href") or ""
                         if href and not href.startswith("https://www.google"):
-                            website = href.split("?")[0]  # strip tracking params
+                            website = href.split("?")[0]
 
                     # ── Rating ──
                     rating_m = re.search(r'aria-label="(\d\.\d)\s*stars?"', html)
@@ -408,16 +415,7 @@ def search_businesses_maps(keyword, location, num_results=10):
                             "linkedin_url":        "",
                         })
 
-                    # Go back to the results list
-                    page.go_back()
-                    time.sleep(2)
-
                 except Exception:
-                    try:
-                        page.go_back()
-                        time.sleep(1)
-                    except Exception:
-                        pass
                     continue
 
             browser.close()
