@@ -380,13 +380,46 @@ def search_businesses_maps(keyword, location, num_results=10):
                         if href and not href.startswith("https://www.google"):
                             website = href.split("?")[0]
 
-                    # ── Rating ──
-                    rating_m = re.search(r'aria-label="(\d\.\d)\s*stars?"', html)
-                    rating = rating_m.group(1) if rating_m else ""
+                    # ── Rating ── (try DOM first, then regex fallback)
+                    rating = ""
+                    rating_el = page.query_selector(
+                        'div.F7nice span[aria-hidden="true"], '
+                        'span.ceNzKf, '
+                        '[aria-label*="stars" i], '
+                        '[aria-label*="star" i]'
+                    )
+                    if rating_el:
+                        r_label = rating_el.get_attribute("aria-label") or rating_el.inner_text()
+                        r_m = re.search(r'(\d[\.,]\d)', r_label)
+                        if r_m:
+                            rating = r_m.group(1).replace(",", ".")
+                        else:
+                            # whole-number rating e.g. "5 stars"
+                            r_m2 = re.search(r'(\d)\s*stars?', r_label, re.IGNORECASE)
+                            if r_m2:
+                                rating = r_m2.group(1)
+                    if not rating:
+                        # Regex fallback — cover both "4.5" and "4,5" locales
+                        rating_m = re.search(r'aria-label="(\d[\.,]\d)\s*stars?"', html, re.IGNORECASE)
+                        if rating_m:
+                            rating = rating_m.group(1).replace(",", ".")
 
-                    # ── Review count ──
-                    count_m = re.search(r'aria-label="([\d,]+)\s*reviews?"', html)
-                    count = count_m.group(1).replace(",", "") if count_m else ""
+                    # ── Review count ── (try DOM first, then regex fallback)
+                    count = ""
+                    count_el = page.query_selector(
+                        'button[aria-label*="reviews" i], '
+                        'span[aria-label*="reviews" i], '
+                        'div[aria-label*="reviews" i]'
+                    )
+                    if count_el:
+                        c_label = count_el.get_attribute("aria-label") or count_el.inner_text()
+                        c_m = re.search(r'([\d,]+)\s*reviews?', c_label, re.IGNORECASE)
+                        if c_m:
+                            count = c_m.group(1).replace(",", "")
+                    if not count:
+                        count_m = re.search(r'aria-label="([\d,]+)\s*reviews?"', html, re.IGNORECASE)
+                        if count_m:
+                            count = count_m.group(1).replace(",", "")
 
                     if name:
                         businesses.append({
@@ -892,20 +925,41 @@ def get_google_reviews(business_name, city="", state=""):
             html = page.content()
             browser.close()
 
-        # Extract from aria-label attributes set by Google Maps
-        # Rating: aria-label="4.3 stars"
-        rating_m = re.search(
-            r'aria-label="(\d\.\d)\s*stars?"', html, re.IGNORECASE
+        # Extract rating + count via DOM selectors first, then regex fallback
+        rating_el = page.query_selector(
+            'div.F7nice span[aria-hidden="true"], '
+            'span.ceNzKf, '
+            '[aria-label*="stars" i], '
+            '[aria-label*="star" i]'
         )
-        # Count: aria-label="273 reviews"
-        count_m = re.search(
-            r'aria-label="([\d,]+)\s*reviews?"', html, re.IGNORECASE
-        )
+        if rating_el:
+            r_label = rating_el.get_attribute("aria-label") or rating_el.inner_text()
+            r_m = re.search(r'(\d[\.,]\d)', r_label)
+            if r_m:
+                rating = r_m.group(1).replace(",", ".")
+            else:
+                r_m2 = re.search(r'(\d)\s*stars?', r_label, re.IGNORECASE)
+                if r_m2:
+                    rating = r_m2.group(1)
+        if not rating:
+            rating_m = re.search(r'aria-label="(\d[\.,]\d)\s*stars?"', html, re.IGNORECASE)
+            if rating_m:
+                rating = rating_m.group(1).replace(",", ".")
 
-        if rating_m:
-            rating = rating_m.group(1)
-        if count_m:
-            count = count_m.group(1).replace(",", "")
+        count_el = page.query_selector(
+            'button[aria-label*="reviews" i], '
+            'span[aria-label*="reviews" i], '
+            'div[aria-label*="reviews" i]'
+        )
+        if count_el:
+            c_label = count_el.get_attribute("aria-label") or count_el.inner_text()
+            c_m = re.search(r'([\d,]+)\s*reviews?', c_label, re.IGNORECASE)
+            if c_m:
+                count = c_m.group(1).replace(",", "")
+        if not count:
+            count_m = re.search(r'aria-label="([\d,]+)\s*reviews?"', html, re.IGNORECASE)
+            if count_m:
+                count = count_m.group(1).replace(",", "")
 
     except Exception:
         pass
