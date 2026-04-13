@@ -370,8 +370,8 @@ def search_businesses_maps(keyword, location, num_results=10):
             time.sleep(3)
 
             # ── Collect card URLs upfront (before any navigation makes them stale) ──
-            # Fetch extra cards as buffer in case some fail
-            fetch_count = num_results + 3
+            # Fetch 2x as buffer — inactive Sunbiz leads get filtered out later
+            fetch_count = (num_results * 2) + 5
             cards = page.query_selector_all("a.hfpxzc")
             card_urls = []
             for c in cards[:fetch_count]:
