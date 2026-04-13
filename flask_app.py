@@ -1358,12 +1358,6 @@ def enrich_leads_batch(leads):
     # Sort back to original order by trade_name
     enriched.sort(key=lambda x: x.get("trade_name", ""))
 
-    # Only keep leads that have at least one email address
-    enriched = [
-        l for l in enriched
-        if l.get("owner_email") or l.get("general_email") or l.get("reg_agent_email")
-    ]
-
     # Save to CSV
     global _leads_store
     _leads_store = enriched
