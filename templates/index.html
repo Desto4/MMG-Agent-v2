@@ -939,7 +939,7 @@ function renderLeadsTable(leads) {
                         <div class="font-semibold text-gray-900 text-sm leading-tight">${tradeName}</div>
                         ${entityName && entityName !== tradeName ? `<div class="text-xs text-gray-400 mt-0.5">${entityName}</div>` : ''}
                         ${badge ? `<div class="mt-1.5">
-                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-teal-50 text-teal-700 border border-teal-100">${badge}</span>
+                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${(l.sunbiz_status||'').toUpperCase()==='INACTIVE' ? 'bg-orange-50 text-orange-600 border border-orange-200' : 'bg-teal-50 text-teal-700 border border-teal-100'}">${badge}</span>
                         </div>` : ''}
                     </div>
                     <i class="fa-solid fa-chevron-down text-gray-300 text-[10px] mt-1.5 flex-shrink-0"></i>
