@@ -1102,6 +1102,9 @@ def upload_leads_to_hubspot(_hubspot_token=None):
 
         # ── Split owner name into first / last ──
         raw_name = (lead.get("owner_name") or "").strip()
+        # Guard: skip if the "name" is actually an email address
+        if "@" in raw_name or re.match(r'^[\w._%+\-]+@[\w.\-]+\.[a-z]{2,}$', raw_name, re.IGNORECASE):
+            raw_name = ""
         # Names from Sunbiz are "LAST, FIRST MIDDLE" or "FIRST LAST"
         first_name, last_name = "", ""
         if raw_name:
@@ -1113,6 +1116,9 @@ def upload_leads_to_hubspot(_hubspot_token=None):
                 parts = raw_name.title().split()
                 first_name = parts[0] if parts else ""
                 last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
+        # Final guard: ensure neither first nor last name contains an @
+        if "@" in first_name: first_name = ""
+        if "@" in last_name:  last_name  = ""
 
         # ── Company name — prefer trade name (human-readable) over entity name ──
         company = (lead.get("trade_name") or lead.get("entity_name") or "").strip()
