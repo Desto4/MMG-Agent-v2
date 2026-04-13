@@ -1100,8 +1100,8 @@ def upload_leads_to_hubspot(_hubspot_token=None):
             results["errors"].append(f"No email for {lead.get('trade_name', 'unknown')}")
             continue
 
-        # ── Split owner name into first / last ──
-        raw_name = (lead.get("owner_name") or "").strip()
+        # ── Split owner name into first / last (fall back to registered agent) ──
+        raw_name = (lead.get("owner_name") or lead.get("registered_agent") or "").strip()
         # Guard: skip if the "name" is actually an email address
         if "@" in raw_name or re.match(r'^[\w._%+\-]+@[\w.\-]+\.[a-z]{2,}$', raw_name, re.IGNORECASE):
             raw_name = ""
