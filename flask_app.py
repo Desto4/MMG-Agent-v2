@@ -1205,7 +1205,7 @@ def save_outreach_csv(drafts):
             )
             writer.writeheader()
             writer.writerows(drafts)
-        return {"success": True, "path": path, "count": len(drafts)}
+        return {"success": True, "path": path, "count": len(drafts), "drafts": drafts}
     except Exception as e:
         return {"error": str(e)}
 
@@ -1877,6 +1877,27 @@ def download_leads():
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=leads.csv"},
     )
+
+
+@app.route("/api/save_outreach", methods=["POST"])
+def save_outreach_edits():
+    """Save inline-edited outreach drafts back to server."""
+    global _outreach_store
+    data = request.get_json(force=True)
+    drafts = data.get("drafts", [])
+    _outreach_store = drafts
+    try:
+        path = os.path.join(os.path.dirname(__file__), "outreach_drafts.csv")
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["name", "email", "subject_line", "email_body"],
+                extrasaction="ignore",
+            )
+            writer.writeheader()
+            writer.writerows(drafts)
+        return jsonify({"success": True, "count": len(drafts)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/download/outreach")

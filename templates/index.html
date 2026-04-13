@@ -734,6 +734,12 @@ async function sendMessage(prefill) {
                             task.outputs.push(`${evt.result.count} email drafts`);
                             renderTasks();
                         }
+                        if (evt.result?.drafts?.length) {
+                            const emailDiv = document.createElement('div');
+                            emailDiv.innerHTML = renderEmailDrafts(evt.result.drafts);
+                            document.getElementById('messages-container').appendChild(emailDiv.firstElementChild);
+                            scrollToBottom();
+                        }
                     }
                     if (evt.name === 'hubspot_create_contact' && evt.result?.success) {
                         if (task) {
@@ -1181,6 +1187,168 @@ function fmtMs(ms) {
 }
 function fmtNum(n) { return Number(n).toLocaleString(); }
 function fmtCost(c) { return c < 0.0001 ? '<$0.0001' : '$'+Number(c).toFixed(4); }
+
+// ── Inline Email Drafts ────────────────────────────────────────────────────
+function renderEmailDrafts(drafts) {
+    const id = 'email-drafts-' + Date.now();
+
+    const cards = drafts.map((d, i) => {
+        const cardId = `${id}-card-${i}`;
+        const name = (d.name || '').replace(/"/g, '&quot;');
+        const email = (d.email || '').replace(/"/g, '&quot;');
+        const subject = (d.subject_line || '').replace(/"/g, '&quot;');
+        const body = (d.email_body || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return `
+        <div class="border border-gray-200 rounded-xl overflow-hidden bg-white shadow-sm" id="${cardId}">
+            <!-- Collapsed header -->
+            <div class="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-50 transition-colors"
+                 onclick="toggleEmailCard('${cardId}')">
+                <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-8 h-8 rounded-full bg-teal-50 border border-teal-100 flex items-center justify-center flex-shrink-0">
+                        <i class="fa-solid fa-envelope text-teal-500 text-xs"></i>
+                    </div>
+                    <div class="min-w-0">
+                        <div class="text-sm font-semibold text-gray-800 truncate">${(d.name||'—')}</div>
+                        <div class="text-xs text-gray-400 truncate">${(d.email||'no email')} · ${(d.subject_line||'no subject')}</div>
+                    </div>
+                </div>
+                <i class="fa-solid fa-chevron-down text-gray-300 text-xs flex-shrink-0 transition-transform" id="${cardId}-chevron"></i>
+            </div>
+            <!-- Expanded compose body -->
+            <div class="hidden border-t border-gray-100" id="${cardId}-body">
+                <div class="px-4 py-3 space-y-3">
+                    <!-- To -->
+                    <div class="flex items-center gap-2 border-b border-gray-100 pb-2">
+                        <span class="text-xs font-semibold text-gray-400 w-14 flex-shrink-0">To</span>
+                        <input type="email" value="${email}"
+                            class="flex-1 text-sm text-gray-700 outline-none focus:ring-0 bg-transparent placeholder-gray-300"
+                            placeholder="recipient@email.com"
+                            data-field="email" data-index="${i}" onchange="markDraftDirty('${id}')">
+                    </div>
+                    <!-- Subject -->
+                    <div class="flex items-center gap-2 border-b border-gray-100 pb-2">
+                        <span class="text-xs font-semibold text-gray-400 w-14 flex-shrink-0">Subject</span>
+                        <input type="text" value="${subject}"
+                            class="flex-1 text-sm text-gray-700 outline-none focus:ring-0 bg-transparent placeholder-gray-300"
+                            placeholder="Email subject"
+                            data-field="subject_line" data-index="${i}" onchange="markDraftDirty('${id}')">
+                    </div>
+                    <!-- Body -->
+                    <textarea rows="8"
+                        class="w-full text-sm text-gray-700 outline-none focus:ring-0 bg-transparent resize-none leading-relaxed"
+                        placeholder="Email body..."
+                        data-field="email_body" data-index="${i}"
+                        onchange="markDraftDirty('${id}')">${body}</textarea>
+                </div>
+                <!-- Footer actions -->
+                <div class="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-t border-gray-100">
+                    <button onclick="copyDraft('${cardId}')"
+                        class="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 transition-colors">
+                        <i class="fa-regular fa-copy"></i> Copy
+                    </button>
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs text-gray-300 italic hidden" id="${cardId}-saved">Saved ✓</span>
+                        <button onclick="saveSingleDraft('${id}', ${i})"
+                            class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-teal-500 text-white rounded-lg hover:bg-teal-600 transition-colors">
+                            <i class="fa-solid fa-floppy-disk"></i> Save
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+    }).join('');
+
+    // Store draft data on the container
+    return `
+    <div class="my-4 rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden" id="${id}">
+        <div class="flex items-center justify-between px-5 py-3.5 bg-gray-50 border-b border-gray-100">
+            <div class="flex items-center gap-2">
+                <i class="fa-solid fa-envelopes-bulk text-teal-500"></i>
+                <span class="text-sm font-semibold text-gray-700">${drafts.length} Email Draft${drafts.length !== 1 ? 's' : ''}</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-300 italic hidden" id="${id}-saved">All changes saved ✓</span>
+                <button onclick="saveAllDrafts('${id}')"
+                    class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors shadow-sm">
+                    <i class="fa-solid fa-floppy-disk text-teal-500"></i> Save All
+                </button>
+                <a href="/api/download/outreach"
+                    class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-teal-500 text-white rounded-lg hover:bg-teal-600 transition-colors">
+                    <i class="fa-solid fa-download"></i> Export CSV
+                </a>
+            </div>
+        </div>
+        <div class="divide-y divide-gray-100 p-3 space-y-2" id="${id}-list">
+            ${cards}
+        </div>
+    </div>`;
+}
+
+function toggleEmailCard(cardId) {
+    const body = document.getElementById(cardId + '-body');
+    const chevron = document.getElementById(cardId + '-chevron');
+    if (body) {
+        body.classList.toggle('hidden');
+        if (chevron) chevron.style.transform = body.classList.contains('hidden') ? '' : 'rotate(180deg)';
+    }
+}
+
+function copyDraft(cardId) {
+    const card = document.getElementById(cardId);
+    if (!card) return;
+    const subject = card.querySelector('[data-field="subject_line"]')?.value || '';
+    const body = card.querySelector('[data-field="email_body"]')?.value || '';
+    navigator.clipboard.writeText(`Subject: ${subject}\n\n${body}`).then(() => {
+        const btn = card.querySelector('button[onclick*="copyDraft"]');
+        if (btn) { btn.innerHTML = '<i class="fa-solid fa-check text-teal-500"></i> Copied'; setTimeout(() => btn.innerHTML = '<i class="fa-regular fa-copy"></i> Copy', 1500); }
+    });
+}
+
+function _collectDrafts(containerId) {
+    const container = document.getElementById(containerId + '-list');
+    if (!container) return [];
+    const drafts = [];
+    container.querySelectorAll('[data-field="email"]').forEach((emailEl, i) => {
+        drafts.push({
+            name:         container.querySelectorAll('[data-field]')[i * 3]?.closest('[data-index]')?.dataset.name || '',
+            email:        emailEl.value,
+            subject_line: container.querySelectorAll('[data-field="subject_line"]')[i]?.value || '',
+            email_body:   container.querySelectorAll('[data-field="email_body"]')[i]?.value || '',
+        });
+    });
+    // Better: collect by index
+    const indexed = {};
+    container.querySelectorAll('[data-index]').forEach(el => {
+        const idx = el.dataset.index;
+        if (!indexed[idx]) indexed[idx] = {};
+        indexed[idx][el.dataset.field] = el.value;
+    });
+    return Object.keys(indexed).sort((a,b)=>a-b).map(k => indexed[k]);
+}
+
+function markDraftDirty(containerId) {
+    const savedEl = document.getElementById(containerId + '-saved');
+    if (savedEl) savedEl.classList.add('hidden');
+}
+
+async function saveAllDrafts(containerId) {
+    const drafts = _collectDrafts(containerId);
+    try {
+        const r = await fetch('/api/save_outreach', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({drafts}) });
+        const data = await r.json();
+        if (data.success) {
+            const savedEl = document.getElementById(containerId + '-saved');
+            if (savedEl) { savedEl.classList.remove('hidden'); setTimeout(() => savedEl.classList.add('hidden'), 2500); }
+        }
+    } catch(e) { console.error('Save failed', e); }
+}
+
+async function saveSingleDraft(containerId, index) {
+    await saveAllDrafts(containerId);
+    const cardId = containerId + '-card-' + index;
+    const savedEl = document.getElementById(cardId + '-saved');
+    if (savedEl) { savedEl.classList.remove('hidden'); setTimeout(() => savedEl.classList.add('hidden'), 2500); }
+}
 
 async function loadPerformance() {
     try {
