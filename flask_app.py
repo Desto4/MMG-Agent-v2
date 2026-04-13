@@ -1182,7 +1182,6 @@ def upload_leads_to_hubspot(_hubspot_token=None):
         if company:    properties["company"]    = company
         if phone:      properties["phone"]      = phone
         if lead.get("website"):  properties["website"]  = lead["website"]
-        if lead.get("linkedin_url"): properties["linkedin_bio"] = lead["linkedin_url"]
         properties["jobtitle"] = "Owner"
 
         try:
