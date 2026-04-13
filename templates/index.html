@@ -831,7 +831,6 @@ function renderLeadsTable(leads) {
     function estBadge(l) {
         const parts = [];
         if (l.industry) parts.push(escHtml(l.industry));
-        if (l.sunbiz_status) parts.push(escHtml(l.sunbiz_status));
         if (l.formation_date) {
             // Just grab month+year from date string
             const d = new Date(l.formation_date);
