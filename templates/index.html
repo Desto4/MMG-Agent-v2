@@ -131,6 +131,16 @@
                     <i class="fa-solid fa-plus mr-2"></i> New task
                 </button>
             </header>
+            <!-- Welcome banner -->
+            <div class="px-8 pt-8">
+                <div class="max-w-4xl bg-gradient-to-r from-teal-500 to-teal-600 rounded-2xl px-8 py-6 text-white shadow-sm">
+                    <h2 class="text-2xl font-bold mb-1">Welcome back, Gabe 👋</h2>
+                    <p class="text-teal-100 text-sm">Ready to find your next tenants? Start a new task to search for leads, enrich contact data, and upload to HubSpot.</p>
+                    <button onclick="newTask()" class="mt-4 bg-white text-teal-600 font-semibold text-sm px-5 py-2 rounded-lg hover:bg-teal-50 transition-colors">
+                        Start prospecting →
+                    </button>
+                </div>
+            </div>
             <div class="flex-1 overflow-y-auto p-8">
                 <div class="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
                     <table class="w-full text-left text-sm">
@@ -182,22 +192,25 @@
             </div>
             <!-- Floating input bar -->
             <div class="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-10 pb-6 px-8 z-20">
-                <div class="max-w-4xl mx-auto relative">
-                    <input id="chat-input" type="text"
-                        placeholder="Ask me to find leads, load to HubSpot, draft emails…"
-                        class="w-full pl-6 pr-14 py-4 bg-white border border-gray-200 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-700 disabled:opacity-50"
-                        onkeydown="if(event.key==='Enter') sendMessage()">
-                    <!-- Send button (shown when idle) -->
-                    <button id="send-btn" onclick="sendMessage()"
-                        class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-gray-100 hover:bg-gray-200 text-gray-500 p-2 rounded-lg transition-colors disabled:opacity-40">
-                        <i class="fa-solid fa-arrow-up"></i>
-                    </button>
-                    <!-- Stop button (shown while streaming) -->
-                    <button id="stop-btn" onclick="stopStreaming()"
-                        class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-red-100 hover:bg-red-200 text-red-600 p-2 rounded-lg transition-colors hidden"
-                        title="Stop generation">
-                        <i class="fa-solid fa-stop"></i>
-                    </button>
+                <div class="max-w-4xl mx-auto">
+                    <p id="gabe-prompt" class="text-center text-lg font-semibold text-gray-600 mb-3">Hey Gabe, what kind of businesses are you looking for today?</p>
+                    <div class="relative">
+                        <input id="chat-input" type="text"
+                            placeholder="Ask me to find leads, load to HubSpot, draft emails…"
+                            class="w-full pl-6 pr-14 py-4 bg-white border border-gray-200 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-700 disabled:opacity-50"
+                            onkeydown="if(event.key==='Enter') sendMessage()">
+                        <!-- Send button (shown when idle) -->
+                        <button id="send-btn" onclick="sendMessage()"
+                            class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-gray-100 hover:bg-gray-200 text-gray-500 p-2 rounded-lg transition-colors disabled:opacity-40">
+                            <i class="fa-solid fa-arrow-up"></i>
+                        </button>
+                        <!-- Stop button (shown while streaming) -->
+                        <button id="stop-btn" onclick="stopStreaming()"
+                            class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-red-100 hover:bg-red-200 text-red-600 p-2 rounded-lg transition-colors hidden"
+                            title="Stop generation">
+                            <i class="fa-solid fa-stop"></i>
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -381,6 +394,22 @@
                                 class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
                         </div>
                     </div>
+
+                    <!-- Gmail App Password -->
+                    <div class="bg-gray-50 rounded-xl p-4 space-y-3">
+                        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Gmail</p>
+                        <p class="text-xs text-gray-400">Generate a free App Password at <a href="https://myaccount.google.com/apppasswords" target="_blank" class="text-teal-500 underline">myaccount.google.com/apppasswords</a> — name it "MMG Agent" and paste the 16-character password below.</p>
+                        <div>
+                            <label class="block text-xs text-gray-500 mb-1">Gmail Address</label>
+                            <input id="input-gmail-address" type="email" placeholder="you@gmail.com"
+                                class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-500 mb-1">App Password</label>
+                            <input id="input-gmail-app-password" type="password" placeholder="xxxx xxxx xxxx xxxx"
+                                class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+                        </div>
+                    </div>
                 </div>
                 <div id="config-msg" class="hidden mt-3 text-sm text-teal-600 font-medium"></div>
                 <div class="flex gap-3 mt-6">
@@ -489,8 +518,16 @@ function newTask() {
     tasks.unshift(task);
     currentTaskId = task.id;
     chatHistory = [];
+    hasLeads = false;
+    hasOutreach = false;
     document.getElementById('messages-container').innerHTML = '';
+    document.getElementById('download-bar').classList.add('hidden');
     document.getElementById('session-title').textContent = 'Agent Session';
+    // Clear backend leads store so old leads don't carry over
+    fetch('/api/clear_leads', { method: 'POST' }).catch(() => {});
+    // Show the prompt text again for the new task
+    const gabePrompt = document.getElementById('gabe-prompt');
+    if (gabePrompt) gabePrompt.classList.remove('hidden');
     renderTasks();
     showPage('session');
     document.getElementById('chat-input').focus();
@@ -640,6 +677,10 @@ async function sendMessage(prefill) {
         document.getElementById('session-title').textContent = task.description.slice(0,40);
         renderTasks();
     }
+
+    // Hide the prompt text after first message
+    const gabePrompt = document.getElementById('gabe-prompt');
+    if (gabePrompt) gabePrompt.classList.add('hidden');
 
     appendUserBubble(message);
     if (task) task.messages.push({role: 'user', content: message});
@@ -797,7 +838,8 @@ function getToolIcon(name) {
         upload_leads_to_hubspot: '📥', get_collected_leads: '📋',
         web_search: '🌐', save_outreach_csv: '💾', save_leads_csv: '💾',
         enrich_leads_batch: '⚡', sunbiz_lookup: '🏛', scrape_website_contact: '🌐',
-        get_google_reviews: '⭐', search_businesses_maps: '🗺️'
+        get_google_reviews: '⭐', search_businesses_maps: '🗺️',
+        send_gmail_email: '📤', create_gmail_drafts: '📧'
     };
     return icons[name] || '⚙️';
 }
@@ -1049,22 +1091,50 @@ async function loadConnectors() {
                 key: 'anthropic', name: 'Anthropic Claude',
                 icon: 'fa-solid fa-robot', color: 'text-purple-600',
                 desc: 'AI model powering the agent. Required for all operations.',
-                configured: config.anthropic
+                configured: config.anthropic,
+                action: 'settings',
             },
             {
                 key: 'hubspot', name: 'HubSpot',
                 icon: 'fa-brands fa-hubspot', color: 'text-orange-500',
                 desc: 'CRM platform. Sync contacts and companies automatically.',
-                configured: config.hubspot
+                configured: config.hubspot,
+                action: 'settings',
             },
             {
                 key: 'apollo', name: 'Apollo.io',
                 icon: 'fa-solid fa-magnifying-glass', color: 'text-gray-700',
                 desc: 'B2B lead database. Search companies and contacts.',
-                configured: config.apollo
+                configured: config.apollo,
+                action: 'settings',
+            },
+            {
+                key: 'gmail', name: 'Gmail',
+                icon: 'fa-brands fa-google', color: 'text-red-500',
+                desc: 'Send outreach emails directly from your Gmail account.',
+                configured: config.gmail,
+                action: 'settings',
             },
         ];
-        grid.innerHTML = connectors.map(c => `
+
+        grid.innerHTML = connectors.map(c => {
+            let btnHtml;
+            if (c.action === 'gmail') {
+                if (c.configured) {
+                    btnHtml = `
+                        <div class="flex gap-2">
+                            <button onclick="connectGmail()" class="flex-1 text-center text-xs font-medium py-1.5 rounded-lg border border-teal-200 text-teal-600 bg-teal-50 hover:bg-teal-100 transition-colors">Reconnect</button>
+                            <button onclick="disconnectGmail()" class="text-xs font-medium py-1.5 px-3 rounded-lg border border-red-200 text-red-500 bg-red-50 hover:bg-red-100 transition-colors">Disconnect</button>
+                        </div>`;
+                } else if (c.clientSet) {
+                    btnHtml = `<button onclick="connectGmail()" class="w-full text-center text-xs font-medium py-1.5 rounded-lg border border-gray-200 text-gray-600 bg-gray-50 hover:bg-gray-100 transition-colors flex items-center justify-center gap-2"><i class="fa-brands fa-google text-red-500"></i> Connect with Google</button>`;
+                } else {
+                    btnHtml = `<button onclick="toggleSettings()" class="w-full text-center text-xs font-medium py-1.5 rounded-lg border border-gray-200 text-gray-600 bg-gray-50 hover:bg-gray-100 transition-colors">Add OAuth Credentials first</button>`;
+                }
+            } else {
+                btnHtml = `<button onclick="toggleSettings()" class="w-full text-center text-xs font-medium py-1.5 rounded-lg border ${c.configured ? 'border-teal-200 text-teal-600 bg-teal-50 hover:bg-teal-100' : 'border-gray-200 text-gray-600 bg-gray-50 hover:bg-gray-100'} transition-colors">${c.configured ? 'Configure' : 'Connect'}</button>`;
+            }
+            return `
             <div class="bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
                 <div class="flex items-center justify-between mb-3">
                     <div class="flex items-center gap-3">
@@ -1080,12 +1150,9 @@ async function loadConnectors() {
                     </div>
                 </div>
                 <p class="text-xs text-gray-500 mb-4">${c.desc}</p>
-                <button onclick="toggleSettings()" class="w-full text-center text-xs font-medium py-1.5 rounded-lg border ${c.configured
-                    ? 'border-teal-200 text-teal-600 bg-teal-50 hover:bg-teal-100'
-                    : 'border-gray-200 text-gray-600 bg-gray-50 hover:bg-gray-100'} transition-colors">
-                    ${c.configured ? 'Configure' : 'Connect'}
-                </button>
-            </div>`).join('');
+                ${btnHtml}
+            </div>`;
+        }).join('');
     } catch (e) {
         console.error('Failed to load connectors', e);
     }
@@ -1127,16 +1194,18 @@ document.getElementById('settings-modal').addEventListener('click', function(e) 
 
 async function saveConfig() {
     const body = {
-        anthropic_key:   document.getElementById('input-anthropic').value.trim(),
-        claude_model:    document.getElementById('input-claude-model').value,
-        apollo_key:     document.getElementById('input-apollo').value.trim(),
-        hunter_key:     document.getElementById('input-hunter').value.trim(),
-        hubspot_token:  document.getElementById('input-hubspot').value.trim(),
-        gemini_key:        document.getElementById('input-gemini').value.trim(),
-        gemini_model:      document.getElementById('input-gemini-model').value,
-        perplexity_key:    document.getElementById('input-perplexity').value.trim(),
-        perplexity_model:  document.getElementById('input-perplexity-model').value,
-        model_provider:    currentProvider,
+        anthropic_key:       document.getElementById('input-anthropic').value.trim(),
+        claude_model:        document.getElementById('input-claude-model').value,
+        apollo_key:          document.getElementById('input-apollo').value.trim(),
+        hunter_key:          document.getElementById('input-hunter').value.trim(),
+        hubspot_token:       document.getElementById('input-hubspot').value.trim(),
+        gemini_key:          document.getElementById('input-gemini').value.trim(),
+        gemini_model:        document.getElementById('input-gemini-model').value,
+        perplexity_key:      document.getElementById('input-perplexity').value.trim(),
+        perplexity_model:    document.getElementById('input-perplexity-model').value,
+        model_provider:      currentProvider,
+        gmail_address:      document.getElementById('input-gmail-address').value.trim(),
+        gmail_app_password: document.getElementById('input-gmail-app-password').value.trim(),
     };
 
     const anyFilled = body.anthropic_key || body.apollo_key || body.hubspot_token || body.gemini_key || body.perplexity_key || body.model_provider;
@@ -1155,12 +1224,14 @@ async function saveConfig() {
             body: JSON.stringify(body)
         });
         // Clear sensitive inputs
-        document.getElementById('input-anthropic').value = '';
-        document.getElementById('input-apollo').value    = '';
-        document.getElementById('input-hunter').value   = '';
-        document.getElementById('input-hubspot').value   = '';
-        document.getElementById('input-gemini').value       = '';
-        document.getElementById('input-perplexity').value   = '';
+        document.getElementById('input-anthropic').value        = '';
+        document.getElementById('input-apollo').value           = '';
+        document.getElementById('input-hunter').value          = '';
+        document.getElementById('input-hubspot').value          = '';
+        document.getElementById('input-gemini').value           = '';
+        document.getElementById('input-perplexity').value       = '';
+        document.getElementById('input-gmail-address').value      = '';
+        document.getElementById('input-gmail-app-password').value = '';
 
         toggleSettings();
         const providerLabel = currentProvider === 'gemini'

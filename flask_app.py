@@ -3,12 +3,33 @@ import re
 import json
 import csv
 import io
+import base64
+import email as email_lib
+import email.mime.text
 from datetime import datetime
 from urllib.parse import quote_plus, urljoin, urlparse
 
+# Load .env file if present (so keys don't need to be entered in the UI)
+try:
+    from dotenv import load_dotenv
+    _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    load_dotenv(_env_path, override=True)
+except ImportError:
+    pass
+
 import requests
-from flask import Flask, request, session, Response, send_file, jsonify, render_template
+from flask import Flask, request, session, Response, send_file, jsonify, render_template, redirect
 import anthropic
+
+# Gmail OAuth imports
+try:
+    from google_auth_oauthlib.flow import Flow as GoogleFlow
+    from google.oauth2.credentials import Credentials as GoogleCredentials
+    from google.auth.transport.requests import Request as GoogleAuthRequest
+    from googleapiclient.discovery import build as google_build
+    _GMAIL_AVAILABLE = True
+except ImportError:
+    _GMAIL_AVAILABLE = False
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -18,6 +39,46 @@ _leads_store    = []
 _outreach_store = []
 _perf_store     = []   # performance records [{provider, model, duration_ms, ...}]
 _hunter_key     = ""   # Hunter.io API key (set from settings)
+
+# Gmail OAuth storage (persisted to file so server restarts don't lose it)
+_GMAIL_TOKEN_FILE   = os.path.join(os.path.dirname(__file__), ".gmail_token.json")
+_GMAIL_CLIENT_FILE  = os.path.join(os.path.dirname(__file__), ".gmail_client.json")
+_GMAIL_SCOPES       = [
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.readonly",
+]
+_GMAIL_REDIRECT_URI = "http://localhost:8502/api/gmail/callback"
+
+def _load_gmail_creds():
+    """Load Gmail OAuth credentials from disk, refresh if expired."""
+    if not os.path.exists(_GMAIL_TOKEN_FILE):
+        return None
+    try:
+        with open(_GMAIL_TOKEN_FILE) as f:
+            data = json.load(f)
+        creds = GoogleCredentials(
+            token=data.get("token"),
+            refresh_token=data.get("refresh_token"),
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=data.get("client_id"),
+            client_secret=data.get("client_secret"),
+            scopes=_GMAIL_SCOPES,
+        )
+        if creds.expired and creds.refresh_token:
+            creds.refresh(GoogleAuthRequest())
+            _save_gmail_creds(creds, data.get("client_id"), data.get("client_secret"))
+        return creds
+    except Exception:
+        return None
+
+def _save_gmail_creds(creds, client_id, client_secret):
+    with open(_GMAIL_TOKEN_FILE, "w") as f:
+        json.dump({
+            "token":         creds.token,
+            "refresh_token": creds.refresh_token,
+            "client_id":     client_id,
+            "client_secret": client_secret,
+        }, f)
 
 # Approximate cost per 1M tokens (input, output) in USD
 _MODEL_PRICING = {
@@ -332,6 +393,50 @@ TOOLS = [
                 }
             },
             "required": ["drafts"],
+        },
+    },
+    {
+        "name": "send_gmail_email",
+        "description": (
+            "Send an email via the user's connected Gmail account. "
+            "Use this when the user explicitly asks to SEND emails (not draft them). "
+            "Only works when Gmail is connected via OAuth."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to":      {"type": "string", "description": "Recipient email address"},
+                "subject": {"type": "string", "description": "Email subject line"},
+                "body":    {"type": "string", "description": "Plain text email body"},
+                "send_all_drafts": {
+                    "type": "boolean",
+                    "description": "If true, send all saved outreach drafts via Gmail.",
+                    "default": False,
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "create_gmail_drafts",
+        "description": (
+            "Create Gmail drafts from the outreach emails so the user can review and send them manually from Gmail. "
+            "Use this by default when the user asks to 'save to Gmail', 'create drafts', or 'push to Gmail'. "
+            "Drafts appear in the user's Gmail Drafts folder — nothing is sent automatically."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "draft_all": {
+                    "type": "boolean",
+                    "description": "If true (default), create a Gmail draft for every saved outreach email.",
+                    "default": True,
+                },
+                "to":      {"type": "string", "description": "Recipient for a single draft (only if draft_all is false)"},
+                "subject": {"type": "string", "description": "Subject for a single draft"},
+                "body":    {"type": "string", "description": "Body for a single draft"},
+            },
+            "required": [],
         },
     },
 ]
@@ -1247,6 +1352,121 @@ def save_outreach_csv(drafts):
         return {"error": str(e)}
 
 
+def _get_gmail_creds():
+    """Get Gmail address and app password — checks session, .env, then persistent file."""
+    import flask
+    _gmail_app_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gmail_app.json")
+
+    # 1. Try session
+    try:
+        gmail_address  = flask.session.get("gmail_address", "")
+        gmail_password = flask.session.get("gmail_app_password", "")
+    except RuntimeError:
+        gmail_address, gmail_password = "", ""
+
+    # 2. Fall back to .env
+    if not gmail_address:
+        gmail_address  = os.getenv("GMAIL_ADDRESS", "")
+    if not gmail_password:
+        gmail_password = os.getenv("GMAIL_APP_PASSWORD", "")
+
+    # 3. Fall back to persistent file (saved via Settings UI)
+    if (not gmail_address or not gmail_password) and os.path.exists(_gmail_app_file):
+        try:
+            with open(_gmail_app_file) as f:
+                data = json.load(f)
+            gmail_address  = gmail_address  or data.get("gmail_address", "")
+            gmail_password = gmail_password or data.get("gmail_app_password", "")
+        except Exception:
+            pass
+
+    return gmail_address, gmail_password
+
+
+def send_gmail_email(to=None, subject=None, body=None, send_all_drafts=False):
+    """Send email(s) via Gmail SMTP using an App Password."""
+    import smtplib
+    gmail_address, gmail_password = _get_gmail_creds()
+    if not gmail_address or not gmail_password:
+        return {"error": "Gmail not configured. Add your Gmail address and App Password in Settings."}
+
+    def _send_one(to_addr, subj, text_body):
+        msg = email_lib.mime.text.MIMEText(text_body, "plain")
+        msg["From"]    = gmail_address
+        msg["To"]      = to_addr
+        msg["Subject"] = subj
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(gmail_address, gmail_password)
+            server.send_message(msg)
+
+    if send_all_drafts:
+        global _outreach_store
+        if not _outreach_store:
+            return {"error": "No outreach drafts found. Write outreach emails first."}
+        sent, failed = [], []
+        for draft in _outreach_store:
+            try:
+                _send_one(draft.get("email", ""), draft.get("subject_line", "No subject"), draft.get("email_body", ""))
+                sent.append(draft.get("email", ""))
+            except Exception as ex:
+                failed.append({"email": draft.get("email", ""), "error": str(ex)})
+        return {"success": True, "sent_count": len(sent), "failed_count": len(failed), "sent": sent, "failed": failed}
+    else:
+        if not to or not subject or not body:
+            return {"error": "Missing required fields: to, subject, body"}
+        try:
+            _send_one(to, subject, body)
+            return {"success": True, "to": to}
+        except Exception as e:
+            return {"error": f"Gmail send failed: {str(e)}"}
+
+
+def create_gmail_drafts(draft_all=True, to=None, subject=None, body=None):
+    """Save outreach emails as drafts in Gmail using the Gmail API (requires OAuth) or IMAP APPEND."""
+    # For App Password users, we use the Gmail API with basic auth via IMAP to append to Drafts
+    import smtplib, imaplib
+    gmail_address, gmail_password = _get_gmail_creds()
+    if not gmail_address or not gmail_password:
+        return {"error": "Gmail not configured. Add your Gmail address and App Password in Settings."}
+
+    def _append_draft(to_addr, subj, text_body):
+        msg = email_lib.mime.text.MIMEText(text_body, "plain")
+        msg["From"]    = gmail_address
+        msg["To"]      = to_addr
+        msg["Subject"] = subj
+        raw = msg.as_bytes()
+        imap = imaplib.IMAP4_SSL("imap.gmail.com")
+        imap.login(gmail_address, gmail_password)
+        imap.append("[Gmail]/Drafts", "\\Draft", imaplib.Time2Internaldate(datetime.now().timestamp()), raw)
+        imap.logout()
+
+    if draft_all:
+        global _outreach_store
+        if not _outreach_store:
+            return {"error": "No outreach drafts found. Write outreach emails first, then create Gmail drafts."}
+        created, failed = [], []
+        for draft in _outreach_store:
+            try:
+                _append_draft(draft.get("email", ""), draft.get("subject_line", "No subject"), draft.get("email_body", ""))
+                created.append(draft.get("email", ""))
+            except Exception as ex:
+                failed.append({"email": draft.get("email", ""), "error": str(ex)})
+        return {
+            "success": True,
+            "created_count": len(created),
+            "failed_count": len(failed),
+            "message": f"Saved {len(created)} email(s) to your Gmail Drafts folder. Open Gmail to review and send.",
+        }
+    else:
+        if not to or not subject or not body:
+            return {"error": "Missing required fields: to, subject, body"}
+        try:
+            _append_draft(to, subject, body)
+            return {"success": True, "to": to, "message": "Draft saved to your Gmail Drafts folder."}
+        except Exception as e:
+            return {"error": f"Gmail draft creation failed: {str(e)}"}
+
+
 def _find_person_contact(name, business_name="", city="", state=""):
     """
     Web-search for a person's email and phone number.
@@ -1434,6 +1654,8 @@ TOOL_MAP = {
     "hubspot_create_contact": hubspot_create_contact,
     "save_leads_csv":         save_leads_csv,
     "save_outreach_csv":      save_outreach_csv,
+    "send_gmail_email":       send_gmail_email,
+    "create_gmail_drafts":    create_gmail_drafts,
 }
 
 
@@ -1803,12 +2025,15 @@ def index():
 
 @app.route("/api/config", methods=["GET"])
 def get_config():
+    _gmail_addr, _gmail_pw = _get_gmail_creds()
+    gmail_connected = bool(_gmail_addr and _gmail_pw)
     return jsonify({
         "anthropic":      bool(session.get("anthropic_key")  or os.getenv("ANTHROPIC_API_KEY")),
         "apollo":         bool(session.get("apollo_key")     or os.getenv("APOLLO_API_KEY")),
         "hubspot":        bool(session.get("hubspot_token")  or os.getenv("HUBSPOT_TOKEN")),
         "gemini":         bool(session.get("gemini_key")       or os.getenv("GEMINI_API_KEY")),
         "perplexity":     bool(session.get("perplexity_key")   or os.getenv("PERPLEXITY_API_KEY")),
+        "gmail":          gmail_connected,
         "model_provider":   session.get("model_provider",   "anthropic"),
         "claude_model":     session.get("claude_model",     "claude-opus-4-6"),
         "gemini_model":     session.get("gemini_model",     "gemini-3-flash-preview"),
@@ -1841,6 +2066,24 @@ def save_config():
         global _hunter_key
         _hunter_key = data["hunter_key"]
         session["hunter_key"] = data["hunter_key"]
+    if data.get("gmail_address") or data.get("gmail_app_password"):
+        # Persist to file so credentials survive server restarts
+        _gmail_app_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gmail_app.json")
+        existing = {}
+        if os.path.exists(_gmail_app_file):
+            try:
+                with open(_gmail_app_file) as f:
+                    existing = json.load(f)
+            except Exception:
+                pass
+        if data.get("gmail_address"):
+            existing["gmail_address"] = data["gmail_address"]
+        if data.get("gmail_app_password"):
+            existing["gmail_app_password"] = data["gmail_app_password"]
+        with open(_gmail_app_file, "w") as f:
+            json.dump(existing, f)
+        session["gmail_address"]      = existing.get("gmail_address", "")
+        session["gmail_app_password"] = existing.get("gmail_app_password", "")
     return jsonify({"ok": True})
 
 
@@ -1997,7 +2240,108 @@ def download_outreach():
     )
 
 
+@app.route("/api/clear_leads", methods=["POST"])
+def clear_leads():
+    global _leads_store, _outreach_store
+    _leads_store = []
+    _outreach_store = []
+    return jsonify({"ok": True})
+
+
+# ── Gmail OAuth endpoints ──────────────────────────────────────────────────────
+
+@app.route("/api/gmail/auth")
+def gmail_auth():
+    if not _GMAIL_AVAILABLE:
+        return jsonify({"error": "Gmail libraries not installed"}), 500
+    if not os.path.exists(_GMAIL_CLIENT_FILE):
+        return jsonify({"error": "Gmail OAuth credentials not configured. Add Client ID + Secret in Settings first."}), 400
+    with open(_GMAIL_CLIENT_FILE) as f:
+        client_data = json.load(f)
+    client_id     = client_data.get("client_id", "")
+    client_secret = client_data.get("client_secret", "")
+    if not client_id or not client_secret:
+        return jsonify({"error": "Gmail Client ID or Secret is empty"}), 400
+
+    flow = GoogleFlow.from_client_config(
+        {
+            "web": {
+                "client_id":     client_id,
+                "client_secret": client_secret,
+                "auth_uri":      "https://accounts.google.com/o/oauth2/auth",
+                "token_uri":     "https://oauth2.googleapis.com/token",
+                "redirect_uris": [_GMAIL_REDIRECT_URI],
+            }
+        },
+        scopes=_GMAIL_SCOPES,
+    )
+    flow.redirect_uri = _GMAIL_REDIRECT_URI
+    authorization_url, state = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+    )
+    session["gmail_oauth_state"] = state
+    return redirect(authorization_url)
+
+
+@app.route("/api/gmail/callback")
+def gmail_callback():
+    if not _GMAIL_AVAILABLE:
+        return "<p>Gmail libraries not installed.</p>", 500
+    if not os.path.exists(_GMAIL_CLIENT_FILE):
+        return "<p>Gmail client credentials missing.</p>", 400
+    with open(_GMAIL_CLIENT_FILE) as f:
+        client_data = json.load(f)
+    client_id     = client_data.get("client_id", "")
+    client_secret = client_data.get("client_secret", "")
+
+    flow = GoogleFlow.from_client_config(
+        {
+            "web": {
+                "client_id":     client_id,
+                "client_secret": client_secret,
+                "auth_uri":      "https://accounts.google.com/o/oauth2/auth",
+                "token_uri":     "https://oauth2.googleapis.com/token",
+                "redirect_uris": [_GMAIL_REDIRECT_URI],
+            }
+        },
+        scopes=_GMAIL_SCOPES,
+        state=session.get("gmail_oauth_state"),
+    )
+    flow.redirect_uri = _GMAIL_REDIRECT_URI
+
+    try:
+        # Allow HTTP for local dev
+        import os as _os
+        _os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+        flow.fetch_token(authorization_response=request.url)
+        creds = flow.credentials
+        _save_gmail_creds(creds, client_id, client_secret)
+        return """
+        <html><body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f0fdf4">
+        <div style="text-align:center;background:white;padding:2rem 3rem;border-radius:1rem;box-shadow:0 4px 24px rgba(0,0,0,.08)">
+          <div style="font-size:3rem;margin-bottom:1rem">✅</div>
+          <h2 style="color:#111827;margin:0 0 .5rem">Gmail Connected!</h2>
+          <p style="color:#6b7280;margin:0 0 1.5rem">Your Gmail account has been authorized successfully.</p>
+          <script>setTimeout(()=>window.close(),2000);</script>
+          <p style="color:#9ca3af;font-size:.8rem">This window will close automatically…</p>
+        </div></body></html>
+        """
+    except Exception as e:
+        return f"<p>OAuth error: {e}</p>", 400
+
+
+@app.route("/api/gmail/disconnect", methods=["POST"])
+def gmail_disconnect():
+    if os.path.exists(_GMAIL_TOKEN_FILE):
+        os.remove(_GMAIL_TOKEN_FILE)
+    return jsonify({"ok": True})
+
+
 if __name__ == "__main__":
     import logging
     logging.basicConfig(level=logging.DEBUG)
-    app.run(port=8501, debug=True, use_reloader=False)
+    port = int(os.environ.get("PORT", 8502))
+    debug = os.environ.get("RAILWAY_ENVIRONMENT") is None  # debug only locally
+    app.run(port=port, debug=debug, use_reloader=debug)
