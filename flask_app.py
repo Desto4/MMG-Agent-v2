@@ -17,6 +17,7 @@ app.secret_key = os.urandom(24)
 _leads_store    = []
 _outreach_store = []
 _perf_store     = []   # performance records [{provider, model, duration_ms, ...}]
+_hunter_key     = ""   # Hunter.io API key (set from settings)
 
 # Approximate cost per 1M tokens (input, output) in USD
 _MODEL_PRICING = {
@@ -940,6 +941,38 @@ def scrape_website_contact(url):
     }
 
 
+def _hunter_domain_search(domain):
+    """
+    Silently look up emails for a domain using Hunter.io.
+    Returns the best email found, or "" if nothing found or key not set.
+    """
+    global _hunter_key
+    if not _hunter_key or not domain:
+        return ""
+    # Strip protocol/path — just need the bare domain
+    domain = re.sub(r'^https?://', '', domain).split('/')[0].split('?')[0].strip()
+    if not domain:
+        return ""
+    try:
+        r = requests.get(
+            "https://api.hunter.io/v2/domain-search",
+            params={"domain": domain, "api_key": _hunter_key, "limit": 10},
+            timeout=10,
+        )
+        data = r.json()
+        emails = data.get("data", {}).get("emails", [])
+        if not emails:
+            return ""
+        # Sort by confidence descending, prefer generic/owner type
+        emails.sort(key=lambda e: (
+            1 if e.get("type") in ("generic", "personal") else 0,
+            e.get("confidence", 0)
+        ), reverse=True)
+        return emails[0].get("value", "")
+    except Exception:
+        return ""
+
+
 def get_google_reviews(business_name, city="", state=""):
     """
     Use a headless browser to open Google Maps, click the first result,
@@ -1304,6 +1337,15 @@ def enrich_leads_batch(leads):
                 # Pull any phone from website if business_phone still blank
                 if not result.get("business_phone") and ws.get("phones"):
                     result["business_phone"] = ws["phones"][0]
+            except Exception:
+                pass
+
+        # 2b. Hunter.io — fill general_email if still blank
+        if url and not result.get("general_email"):
+            try:
+                hunter_email = _hunter_domain_search(url)
+                if hunter_email:
+                    result["general_email"] = hunter_email
             except Exception:
                 pass
 
@@ -1770,6 +1812,10 @@ def save_config():
         session["perplexity_key"]   = data["perplexity_key"]
     if data.get("perplexity_model"):
         session["perplexity_model"] = data["perplexity_model"]
+    if data.get("hunter_key"):
+        global _hunter_key
+        _hunter_key = data["hunter_key"]
+        session["hunter_key"] = data["hunter_key"]
     return jsonify({"ok": True})
 
 
@@ -1788,6 +1834,9 @@ def chat():
     claude_model     = session.get("claude_model",     "claude-opus-4-6")
     gemini_model     = session.get("gemini_model",     "gemini-2.0-flash")
     perplexity_key   = session.get("perplexity_key")   or os.getenv("PERPLEXITY_API_KEY", "")
+    # Restore Hunter key into global so enrichment can use it
+    global _hunter_key
+    _hunter_key = session.get("hunter_key") or os.getenv("HUNTER_API_KEY", "") or _hunter_key
     perplexity_model = session.get("perplexity_model", "sonar-pro")
 
     def stream():

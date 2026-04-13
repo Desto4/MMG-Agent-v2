@@ -371,6 +371,11 @@
                                 class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
                         </div>
                         <div>
+                            <label class="block text-xs text-gray-500 mb-1">Email Enrichment Key</label>
+                            <input id="input-hunter" type="password" placeholder="Hunter.io key..."
+                                class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+                        </div>
+                        <div>
                             <label class="block text-xs text-gray-500 mb-1">HubSpot Token</label>
                             <input id="input-hubspot" type="password" placeholder="pat-na1-..."
                                 class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
@@ -1127,6 +1132,7 @@ async function saveConfig() {
         anthropic_key:   document.getElementById('input-anthropic').value.trim(),
         claude_model:    document.getElementById('input-claude-model').value,
         apollo_key:     document.getElementById('input-apollo').value.trim(),
+        hunter_key:     document.getElementById('input-hunter').value.trim(),
         hubspot_token:  document.getElementById('input-hubspot').value.trim(),
         gemini_key:        document.getElementById('input-gemini').value.trim(),
         gemini_model:      document.getElementById('input-gemini-model').value,
@@ -1153,6 +1159,7 @@ async function saveConfig() {
         // Clear sensitive inputs
         document.getElementById('input-anthropic').value = '';
         document.getElementById('input-apollo').value    = '';
+        document.getElementById('input-hunter').value   = '';
         document.getElementById('input-hubspot').value   = '';
         document.getElementById('input-gemini').value       = '';
         document.getElementById('input-perplexity').value   = '';
