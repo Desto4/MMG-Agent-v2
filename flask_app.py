@@ -1090,14 +1090,28 @@ def upload_leads_to_hubspot(_hubspot_token=None):
     if not _leads_store:
         return {"error": "No leads collected yet. Run a lead search first."}
 
-    results = {"uploaded": 0, "skipped": 0, "errors": [], "contacts": []}
+    # Only process leads that have at least one email address
+    leads_with_email = [
+        l for l in _leads_store
+        if l.get("owner_email") or l.get("general_email") or l.get("reg_agent_email")
+    ]
+    skipped_no_email = len(_leads_store) - len(leads_with_email)
 
-    for lead in _leads_store:
-        # ── Pick best email ──
-        email = (lead.get("owner_email") or lead.get("general_email") or "").strip()
+    results = {
+        "uploaded": 0, "skipped": skipped_no_email, "errors": [],
+        "contacts": [],
+        "no_email_count": skipped_no_email,
+    }
+
+    for lead in leads_with_email:
+        # ── Pick best email: owner → general → registered agent ──
+        email = (
+            lead.get("owner_email") or
+            lead.get("general_email") or
+            lead.get("reg_agent_email") or ""
+        ).strip()
         if not email:
             results["skipped"] += 1
-            results["errors"].append(f"No email for {lead.get('trade_name', 'unknown')}")
             continue
 
         # ── Split owner name into first / last (fall back to registered agent) ──
