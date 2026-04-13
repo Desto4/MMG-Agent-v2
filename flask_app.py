@@ -1104,15 +1104,13 @@ def upload_leads_to_hubspot(_hubspot_token=None):
     }
 
     for lead in leads_with_email:
-        # ── Pick best email: owner → general → registered agent ──
+        # ── Pick best email: owner → general → registered agent → placeholder ──
         email = (
             lead.get("owner_email") or
             lead.get("general_email") or
-            lead.get("reg_agent_email") or ""
+            lead.get("reg_agent_email") or
+            "johndoe@gmail.com"
         ).strip()
-        if not email:
-            results["skipped"] += 1
-            continue
 
         # ── Split owner name into first / last (fall back to registered agent) ──
         raw_name = (lead.get("owner_name") or lead.get("registered_agent") or "").strip()
