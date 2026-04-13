@@ -1407,6 +1407,9 @@ def enrich_leads_batch(leads):
     # Sort back to original order by trade_name
     enriched.sort(key=lambda x: x.get("trade_name", ""))
 
+    # Filter out leads with an INACTIVE Sunbiz status
+    enriched = [l for l in enriched if l.get("sunbiz_status", "").upper() != "INACTIVE"]
+
     # Save to CSV
     global _leads_store
     _leads_store = enriched
