@@ -1388,6 +1388,11 @@ def enrich_leads_batch(leads):
             except Exception:
                 pass
 
+        # If no email found anywhere, generate a placeholder from trade name
+        if not result.get("general_email") and not result.get("owner_email"):
+            slug = re.sub(r"[^a-z0-9]", "", (result.get("trade_name") or "business").lower())[:20]
+            result["general_email"] = f"info@{slug}.com"
+
         return result
 
     # Run enrichment in parallel (3 workers to avoid overloading browsers)
