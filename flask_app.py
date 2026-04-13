@@ -589,12 +589,17 @@ def apollo_search_people(keywords=None, locations=None, num_results=20, _apollo_
                 except Exception:
                     pass
 
+            website = org.get("website_url", "")
+
+            # Pull email via Hunter.io silently
+            general_email = _hunter_domain_search(website) if website else ""
+
             lead = {
                 "trade_name":        org.get("name", ""),
                 "entity_name":       "",   # filled by sunbiz_lookup
                 "formation_date":    formation_date,
                 "years_in_business": years_in_business,
-                "general_email":     "",   # filled by scrape_website_contact
+                "general_email":     general_email,
                 "owner_name":        "",
                 "owner_email":       "",
                 "owner_phone":       "",
@@ -602,7 +607,7 @@ def apollo_search_people(keywords=None, locations=None, num_results=20, _apollo_
                 "reg_agent_address": "",
                 "business_phone":    phone,
                 "address":           org.get("raw_address", ""),
-                "website":           org.get("website_url", ""),
+                "website":           website,
                 "instagram_url":     "",   # filled by scrape_website_contact
                 "facebook_url":      fb_url,
                 "google_review_count": "",
