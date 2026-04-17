@@ -200,16 +200,23 @@ def _leads_db_xlsx_path():
     return ""
 
 
-# In-memory DuckDB rebuilt when the source .xlsx path/mtime/sheet changes
+# Persistent DuckDB - rebuilt only when Excel is newer than the .db file
 _tenant_crm_duck = {
     "con":          None,
-    "path":         None,
-    "mtime":        None,
+    "path":         None,   # xlsx path used for current con
+    "db_path":      None,   # .db file path
+    "mtime":        None,   # xlsx mtime at last build
     "sheet":        None,
     "table":        "leads_db",
     "row_count":    0,
-    "identifiers": [],  # quoted SQL identifiers for SELECT / concat_ws
+    "identifiers": [],
 }
+
+
+def _leads_db_path(xlsx_path):
+    """Return the .db file path next to the Excel file."""
+    base = os.path.splitext(xlsx_path)[0]
+    return base + "_leads.duckdb"
 
 
 def _tenant_crm_cell_str(v):
@@ -239,7 +246,11 @@ def _tenant_crm_unique_sql_idents(headers):
 
 
 def _tenant_crm_load_into_duckdb(path, sheet_name=None):
-    """Read .xlsx into an in-memory DuckDB table (replaces previous connection)."""
+    """
+    Read .xlsx and write a persistent DuckDB file next to it.
+    The .db file is only rebuilt when the Excel mtime is newer.
+    Returns (sheet_title, rows_scanned).
+    """
     try:
         from openpyxl import load_workbook
     except ImportError:
@@ -249,86 +260,136 @@ def _tenant_crm_load_into_duckdb(path, sheet_name=None):
     except ImportError:
         raise RuntimeError("duckdb is not installed. Run: pip install -r requirements.txt") from None
 
-    wb = load_workbook(path, read_only=True, data_only=True)
-    if sheet_name:
+    db_path = _leads_db_path(path)
+    xlsx_mtime = os.path.getmtime(path)
+
+    # Close any existing open connection before touching the file
+    if _tenant_crm_duck["con"] is not None:
         try:
-            ws = wb[sheet_name]
-        except KeyError:
-            names = list(wb.sheetnames)
-            wb.close()
-            raise KeyError(f"Sheet not found: {sheet_name!r}. Available: {names!r}") from None
-    else:
-        ws = wb.active
+            _tenant_crm_duck["con"].close()
+        except Exception:
+            pass
+        _tenant_crm_duck["con"] = None
 
-    rows_iter = ws.iter_rows(values_only=True)
-    try:
-        header_row = next(rows_iter)
-    except StopIteration:
-        wb.close()
-        raise ValueError("Sheet is empty") from None
+    # Rebuild .db only if Excel is newer or .db doesn't exist
+    needs_rebuild = (
+        not os.path.isfile(db_path)
+        or os.path.getmtime(db_path) < xlsx_mtime
+    )
 
-    labels = []
-    for i, h in enumerate(header_row):
-        if h is None or (isinstance(h, str) and not h.strip()):
-            labels.append(f"column_{i + 1}")
-        else:
-            labels.append(str(h).strip())
-
-    idents = _tenant_crm_unique_sql_idents(labels)
-    max_rows = 50_000
-    data_rows = []
-    scanned = 0
-    for row in rows_iter:
-        scanned += 1
-        if scanned > max_rows:
-            break
-        vals = []
-        nonempty = False
-        for j in range(len(idents)):
-            cell = row[j] if j < len(row) else None
-            s = _tenant_crm_cell_str(cell)
-            if s:
-                nonempty = True
-            vals.append(s)
-        if nonempty:
-            data_rows.append(tuple(vals))
-
-    wb.close()
-
-    con = duckdb.connect(database=":memory:")
-    cols_sql = ", ".join(f"{ident} VARCHAR" for ident in idents)
     tbl = _tenant_crm_duck["table"]
-    con.execute(f"CREATE TABLE {tbl} ({cols_sql})")
-    if data_rows:
-        placeholders = ", ".join(["?"] * len(idents))
-        con.executemany(
-            f"INSERT INTO {tbl} VALUES ({placeholders})",
-            data_rows,
-        )
 
-    _tenant_crm_duck["con"] = con
-    _tenant_crm_duck["path"] = path
-    _tenant_crm_duck["mtime"] = os.path.getmtime(path)
-    _tenant_crm_duck["sheet"] = ws.title
-    _tenant_crm_duck["row_count"] = len(data_rows)
+    if needs_rebuild:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        if sheet_name:
+            try:
+                ws = wb[sheet_name]
+            except KeyError:
+                names = list(wb.sheetnames)
+                wb.close()
+                raise KeyError(f"Sheet not found: {sheet_name!r}. Available: {names!r}") from None
+        else:
+            ws = wb.active
+
+        rows_iter = ws.iter_rows(values_only=True)
+        try:
+            header_row = next(rows_iter)
+        except StopIteration:
+            wb.close()
+            raise ValueError("Sheet is empty") from None
+
+        labels = []
+        for i, h in enumerate(header_row):
+            if h is None or (isinstance(h, str) and not h.strip()):
+                labels.append(f"column_{i + 1}")
+            else:
+                labels.append(str(h).strip())
+
+        idents = _tenant_crm_unique_sql_idents(labels)
+        max_rows = 50_000
+        data_rows = []
+        scanned = 0
+        for row in rows_iter:
+            scanned += 1
+            if scanned > max_rows:
+                break
+            vals = []
+            nonempty = False
+            for j in range(len(idents)):
+                cell = row[j] if j < len(row) else None
+                s = _tenant_crm_cell_str(cell)
+                if s:
+                    nonempty = True
+                vals.append(s)
+            if nonempty:
+                data_rows.append(tuple(vals))
+
+        wb.close()
+
+        # Write persistent .db (overwrite)
+        if os.path.isfile(db_path):
+            os.remove(db_path)
+        con = duckdb.connect(database=db_path)
+        cols_sql = ", ".join(f"{ident} VARCHAR" for ident in idents)
+        con.execute(f"CREATE TABLE IF NOT EXISTS {tbl} ({cols_sql})")
+        if data_rows:
+            placeholders = ", ".join(["?"] * len(idents))
+            con.executemany(
+                f"INSERT INTO {tbl} VALUES ({placeholders})",
+                data_rows,
+            )
+        con.close()
+
+        sheet_title = ws.title
+        row_count = len(data_rows)
+        truncated = scanned > max_rows
+    else:
+        # .db is up to date — read schema from it to populate identifiers
+        con_tmp = duckdb.connect(database=db_path, read_only=True)
+        cols_info = con_tmp.execute(f"PRAGMA table_info('{tbl}')").fetchall()
+        con_tmp.close()
+        idents = ['"' + row[1].replace('"', '""') + '"' for row in cols_info]
+        row_count = None   # don't recount — expensive
+        truncated = False
+        scanned = 0
+        sheet_title = sheet_name or ""
+
+    # Open persistent file for queries
+    con = duckdb.connect(database=db_path, read_only=False)
+
+    _tenant_crm_duck["con"]        = con
+    _tenant_crm_duck["path"]       = path
+    _tenant_crm_duck["db_path"]    = db_path
+    _tenant_crm_duck["mtime"]      = xlsx_mtime
+    _tenant_crm_duck["sheet"]      = sheet_title
+    _tenant_crm_duck["row_count"]  = row_count
     _tenant_crm_duck["identifiers"] = idents
-    _tenant_crm_duck["truncated"] = scanned > max_rows
-    return ws.title, scanned
+    _tenant_crm_duck["truncated"]  = truncated
+    return sheet_title, scanned
 
 
 def _tenant_crm_get_connection(path, sheet_name=None):
-    """Return cached DuckDB connection or rebuild from Excel if stale."""
-    st = os.stat(path)
-    mtime = st.st_mtime
+    """
+    Return a live DuckDB connection.
+    - If in-process connection is current (same path + mtime), reuse it.
+    - If .db file exists on disk and Excel hasn't changed, open it directly (fast restart).
+    - Otherwise rebuild from Excel.
+    """
+    import duckdb
+    xlsx_mtime = os.path.getmtime(path)
+    db_path = _leads_db_path(path)
     cache_sheet = sheet_name or ""
+
+    # Reuse open connection if still valid
     if (
         _tenant_crm_duck["con"] is not None
         and _tenant_crm_duck["path"] == path
-        and _tenant_crm_duck["mtime"] == mtime
+        and _tenant_crm_duck["mtime"] == xlsx_mtime
         and (_tenant_crm_duck.get("sheet_requested") or "") == cache_sheet
     ):
         return _tenant_crm_duck["con"]
 
+    # Close stale connection
     if _tenant_crm_duck["con"] is not None:
         try:
             _tenant_crm_duck["con"].close()
@@ -337,6 +398,20 @@ def _tenant_crm_get_connection(path, sheet_name=None):
         _tenant_crm_duck["con"] = None
 
     _tenant_crm_duck["sheet_requested"] = cache_sheet
+
+    # If .db exists and is up to date, just open it (no Excel read needed)
+    if (
+        os.path.isfile(db_path)
+        and os.path.getmtime(db_path) >= xlsx_mtime
+        and _tenant_crm_duck["identifiers"]  # schema already known in this process
+    ):
+        con = duckdb.connect(database=db_path, read_only=False)
+        _tenant_crm_duck["con"]     = con
+        _tenant_crm_duck["path"]    = path
+        _tenant_crm_duck["db_path"] = db_path
+        _tenant_crm_duck["mtime"]   = xlsx_mtime
+        return con
+
     _tenant_crm_load_into_duckdb(path, sheet_name=sheet_name)
     return _tenant_crm_duck["con"]
 
@@ -402,14 +477,14 @@ def query_tenant_crm(query="", sheet_name=None, limit=50):
 
         rows = [dict(zip(cols, r)) for r in result]
         return {
-            "rows":       rows,
-            "count":      len(rows),
-            "sheet":      _tenant_crm_duck.get("sheet"),
-            "path":       path,
-            "engine":     "duckdb",
-            "table":      tbl,
+            "rows":        rows,
+            "count":       len(rows),
+            "sheet":       _tenant_crm_duck.get("sheet"),
+            "source_xlsx": path,
+            "db_file":     _tenant_crm_duck.get("db_path"),
+            "engine":      "duckdb",
+            "table":       tbl,
             "source_rows": _tenant_crm_duck.get("row_count"),
-            "truncated_load": _tenant_crm_duck.get("truncated", False),
         }
     except Exception as e:
         return {"error": str(e), "rows": [], "engine": "duckdb"}

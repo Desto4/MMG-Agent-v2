@@ -10,6 +10,7 @@ __pycache__/
 leads.csv
 outreach_drafts.csv
 flask.log
+*.duckdb
 
 # Claude Code internal
 .claude/
