@@ -674,13 +674,11 @@ TOOLS = [
     {
         "name": "query_tenant_crm",
         "description": (
-            "MMG local business leads database (Excel → in-memory DuckDB, fast SQL). "
-            "Contains businesses across industries in Miami-Dade and Broward counties — use this as a PRE-LOADED "
-            "source of prospects before going to Maps or the web. "
-            "Call PROACTIVELY whenever the user asks about businesses, industries, leads, contacts, or counties "
-            "without waiting for them to say 'database' or 'Excel'. "
-            "Pass keywords (industry, city, county, business name) as `query`; empty `query` samples the first rows. "
-            "Multi-word query = all words must appear somewhere in the row."
+            "STEP 1 FOR ALL LEAD REQUESTS. MMG's pre-loaded database of 7,302 businesses "
+            "(Miami-Dade and Broward counties: hair salons, barbers, nail salons and more). "
+            "Always call this BEFORE search_businesses_maps. Pass industry/city/county keywords as `query`. "
+            "Empty `query` returns first rows. Multi-word query requires all words to appear in the row. "
+            "Only fall back to Maps search if this returns 0 rows."
         ),
         "input_schema": {
             "type": "object",
@@ -2042,10 +2040,16 @@ Find business prospects (tenants) who may be looking to open a new location, exp
 
 ## Workflow
 
-**Finding new leads:**
-Step 1 — Call search_businesses_maps with the keyword, location, and exact num_results requested.
-Step 2 — Immediately pass the full `leads` array into enrich_leads_batch (fills all 15 fields in parallel).
-Step 3 — Reply with ONE sentence: "Found and enriched N [type] in [location] — results are in the table below."
+**Finding leads — ALWAYS follow this order, no exceptions:**
+
+Step 1 — Call `query_tenant_crm` FIRST with keywords from the user's request (industry, city, county, business name).
+          This is your pre-loaded database of 7,302 businesses in Miami-Dade and Broward. It is always faster than Maps.
+          If the user says "nail salons", query "nail salon". If they say "Broward barbers", query "Broward barber". 
+          Use empty query to sample what's available if unsure.
+Step 2 — If the database returns results, present them. Reply with ONE sentence: "Found N [type] in the database — results are below."
+Step 3 — Only if `query_tenant_crm` returns 0 results, fall back to `search_businesses_maps` + `enrich_leads_batch`.
+
+NEVER skip Step 1. NEVER go straight to search_businesses_maps when the user asks for leads or businesses.
 Never call sunbiz_lookup, scrape_website_contact, or get_google_reviews individually.
 Only use apollo_search_people if the user explicitly asks for it.
 
@@ -2064,9 +2068,6 @@ Each email should:
 NEVER search for new leads. NEVER enrich leads. NEVER call hubspot_create_contact manually.
 Call upload_leads_to_hubspot() — it handles all field mapping automatically.
 Reply with ONE sentence summarising how many contacts were uploaded.
-
-**Business leads database (proactive):**
-You have a pre-loaded local database of businesses across industries in Miami-Dade and Broward counties (`query_tenant_crm`). Use it as your **first stop** for any lead request — it is faster than Maps search and already has business data ready. Call it proactively whenever the user asks for businesses, leads, or contacts in any industry or area, even if they don't mention "database" or "Excel". Pass industry/city/county keywords from their message as `query`; use empty `query` to see what columns and data exist. If the database returns no matches, then fall back to `search_businesses_maps` for live discovery. Do not invent rows — if the tool returns nothing, say so and offer to search Maps instead.
 
 ## Rules
 - Keep ALL post-tool responses to 1 sentence.
