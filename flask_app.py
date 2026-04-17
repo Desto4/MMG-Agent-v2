@@ -582,10 +582,12 @@ TOOLS = [
     {
         "name": "query_tenant_crm",
         "description": (
-            "Search the MMG Tenant CRM data: the .xlsx is loaded into an in-memory DuckDB table, "
-            "then filtered with SQL. Use for tenants, properties, or CRM spreadsheet questions. "
-            "Pass a short query to match text across columns (multi-word = all words must match); "
-            "leave query empty to list the first rows."
+            "Local MMG Tenant CRM (Excel → in-memory DuckDB, fast SQL). "
+            "Use PROACTIVELY whenever the user's question could be answered from your saved tenant/property/deal/pipeline "
+            "records — do NOT wait for them to say 'CRM' or 'spreadsheet'. Prefer this over web_search for internal MMG data. "
+            "Examples: lease status, tenant names, addresses, buildings, contacts, notes, history, lists, counts, lookups. "
+            "Pass keywords from their question as `query`; use empty `query` to sample rows or infer columns. "
+            "Multi-word query = all words must appear somewhere in the row."
         ),
         "input_schema": {
             "type": "object",
@@ -1970,8 +1972,8 @@ NEVER search for new leads. NEVER enrich leads. NEVER call hubspot_create_contac
 Call upload_leads_to_hubspot() — it handles all field mapping automatically.
 Reply with ONE sentence summarising how many contacts were uploaded.
 
-**Tenant CRM spreadsheet:**
-When the user asks about tenants, lease history, or data in the MMG Tenant CRM Excel file, call query_tenant_crm with a short search query (or empty query to sample rows). Data is queried via DuckDB in memory after loading the sheet. Do not guess — read from the tool results.
+**Tenant CRM (proactive):**
+You have a local Tenant CRM database (`query_tenant_crm`). Whenever a question could plausibly be answered from MMG's own tenant/property/deal records — leases, pipeline, contacts, buildings, status, history, or anything that sounds like internal portfolio data — **call query_tenant_crm first** before web_search or guessing. The user does not need to mention "CRM" or "Excel". Use keywords from their message as the search `query`; if you need to see columns or aren't sure what to search, call it with an empty `query` to sample rows then refine. If the tool returns nothing relevant, say so briefly — do not invent rows. For **new lead discovery from the open market** (Maps search), keep using search_businesses_maps — the CRM tool is for your existing dataset, not for finding brand-new prospects online.
 
 ## Rules
 - Keep ALL post-tool responses to 1 sentence.
