@@ -181,10 +181,152 @@ def _tenant_crm_xlsx_path():
     return (os.environ.get("TENANT_CRM_XLSX_PATH") or "").strip()
 
 
+# In-memory DuckDB rebuilt when the source .xlsx path/mtime/sheet changes
+_tenant_crm_duck = {
+    "con":          None,
+    "path":         None,
+    "mtime":        None,
+    "sheet":        None,
+    "table":        "tenant_crm",
+    "row_count":    0,
+    "identifiers": [],  # quoted SQL identifiers for SELECT / concat_ws
+}
+
+
+def _tenant_crm_cell_str(v):
+    if v is None:
+        return ""
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    return str(v).strip()
+
+
+def _tenant_crm_unique_sql_idents(headers):
+    """Map header labels to unique double-quoted DuckDB identifiers."""
+    seen = {}
+    out = []
+    for i, h in enumerate(headers):
+        base = h if h.strip() else f"column_{i + 1}"
+        slug = re.sub(r"[^\w]+", "_", base.strip()).strip("_") or f"col_{i + 1}"
+        key = slug.lower()
+        if key in seen:
+            seen[key] += 1
+            slug = f"{slug}_{seen[key]}"
+        else:
+            seen[key] = 0
+        ident = '"' + slug.replace('"', '""') + '"'
+        out.append(ident)
+    return out
+
+
+def _tenant_crm_load_into_duckdb(path, sheet_name=None):
+    """Read .xlsx into an in-memory DuckDB table (replaces previous connection)."""
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        raise RuntimeError("openpyxl is not installed. Run: pip install -r requirements.txt") from None
+    try:
+        import duckdb
+    except ImportError:
+        raise RuntimeError("duckdb is not installed. Run: pip install -r requirements.txt") from None
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    if sheet_name:
+        try:
+            ws = wb[sheet_name]
+        except KeyError:
+            names = list(wb.sheetnames)
+            wb.close()
+            raise KeyError(f"Sheet not found: {sheet_name!r}. Available: {names!r}") from None
+    else:
+        ws = wb.active
+
+    rows_iter = ws.iter_rows(values_only=True)
+    try:
+        header_row = next(rows_iter)
+    except StopIteration:
+        wb.close()
+        raise ValueError("Sheet is empty") from None
+
+    labels = []
+    for i, h in enumerate(header_row):
+        if h is None or (isinstance(h, str) and not h.strip()):
+            labels.append(f"column_{i + 1}")
+        else:
+            labels.append(str(h).strip())
+
+    idents = _tenant_crm_unique_sql_idents(labels)
+    max_rows = 50_000
+    data_rows = []
+    scanned = 0
+    for row in rows_iter:
+        scanned += 1
+        if scanned > max_rows:
+            break
+        vals = []
+        nonempty = False
+        for j in range(len(idents)):
+            cell = row[j] if j < len(row) else None
+            s = _tenant_crm_cell_str(cell)
+            if s:
+                nonempty = True
+            vals.append(s)
+        if nonempty:
+            data_rows.append(tuple(vals))
+
+    wb.close()
+
+    con = duckdb.connect(database=":memory:")
+    cols_sql = ", ".join(f"{ident} VARCHAR" for ident in idents)
+    tbl = _tenant_crm_duck["table"]
+    con.execute(f"CREATE TABLE {tbl} ({cols_sql})")
+    if data_rows:
+        placeholders = ", ".join(["?"] * len(idents))
+        con.executemany(
+            f"INSERT INTO {tbl} VALUES ({placeholders})",
+            data_rows,
+        )
+
+    _tenant_crm_duck["con"] = con
+    _tenant_crm_duck["path"] = path
+    _tenant_crm_duck["mtime"] = os.path.getmtime(path)
+    _tenant_crm_duck["sheet"] = ws.title
+    _tenant_crm_duck["row_count"] = len(data_rows)
+    _tenant_crm_duck["identifiers"] = idents
+    _tenant_crm_duck["truncated"] = scanned > max_rows
+    return ws.title, scanned
+
+
+def _tenant_crm_get_connection(path, sheet_name=None):
+    """Return cached DuckDB connection or rebuild from Excel if stale."""
+    st = os.stat(path)
+    mtime = st.st_mtime
+    cache_sheet = sheet_name or ""
+    if (
+        _tenant_crm_duck["con"] is not None
+        and _tenant_crm_duck["path"] == path
+        and _tenant_crm_duck["mtime"] == mtime
+        and (_tenant_crm_duck.get("sheet_requested") or "") == cache_sheet
+    ):
+        return _tenant_crm_duck["con"]
+
+    if _tenant_crm_duck["con"] is not None:
+        try:
+            _tenant_crm_duck["con"].close()
+        except Exception:
+            pass
+        _tenant_crm_duck["con"] = None
+
+    _tenant_crm_duck["sheet_requested"] = cache_sheet
+    _tenant_crm_load_into_duckdb(path, sheet_name=sheet_name)
+    return _tenant_crm_duck["con"]
+
+
 def query_tenant_crm(query="", sheet_name=None, limit=50):
     """
-    Load rows from the Tenant CRM .xlsx and return rows matching a text query.
-    If query is empty, returns the first `limit` data rows.
+    Load the Tenant CRM .xlsx into an in-memory DuckDB database and query it.
+    If query is empty, returns the first `limit` rows; otherwise filters rows whose
+    concatenated column text matches (all words must appear for multi-word queries).
     """
     path = _tenant_crm_xlsx_path()
     if not path:
@@ -198,90 +340,60 @@ def query_tenant_crm(query="", sheet_name=None, limit=50):
     if not os.path.isfile(path):
         return {"error": f"Tenant CRM file not found: {path}", "rows": []}
 
-    try:
-        from openpyxl import load_workbook
-    except ImportError:
-        return {"error": "openpyxl is not installed. Run: pip install -r requirements.txt", "rows": []}
-
     limit = max(1, min(int(limit or 50), 200))
-    max_scan = 50_000
+    tbl = _tenant_crm_duck["table"]
 
     try:
-        wb = load_workbook(path, read_only=True, data_only=True)
-        if sheet_name:
-            try:
-                ws = wb[sheet_name]
-            except KeyError:
-                names = list(wb.sheetnames)
-                wb.close()
-                return {
-                    "error": f"Sheet not found: {sheet_name!r}. Available: {names!r}",
-                    "rows": [],
-                }
-        else:
-            ws = wb.active
-
-        rows_iter = ws.iter_rows(values_only=True)
-        try:
-            header_row = next(rows_iter)
-        except StopIteration:
-            wb.close()
-            return {"rows": [], "count": 0, "message": "Sheet is empty", "sheet": ws.title}
-
-        headers = []
-        for i, h in enumerate(header_row):
-            if h is None or (isinstance(h, str) and not h.strip()):
-                headers.append(f"column_{i + 1}")
-            else:
-                headers.append(str(h).strip())
-
-        def _cell_val(v):
-            if v is None:
-                return ""
-            if hasattr(v, "isoformat"):
-                return v.isoformat()
-            return str(v).strip()
-
-        q = (query or "").strip().lower()
-        words = q.split() if q else []
-
-        out = []
-        scanned = 0
-        for row in rows_iter:
-            scanned += 1
-            if scanned > max_scan:
-                break
-            d = {}
-            for i, cell in enumerate(row):
-                if i >= len(headers):
-                    break
-                d[headers[i]] = _cell_val(cell)
-            if not any(str(v).strip() for v in d.values()):
-                continue
-            if not q:
-                out.append(d)
-            else:
-                hay = " ".join(str(v).lower() for v in d.values())
-                if len(words) <= 1:
-                    if q in hay:
-                        out.append(d)
-                else:
-                    if all(w in hay for w in words):
-                        out.append(d)
-            if len(out) >= limit:
-                break
-
-        wb.close()
-        return {
-            "rows":       out,
-            "count":      len(out),
-            "sheet":      ws.title,
-            "path":       path,
-            "scanned":    scanned,
-            "truncated":  scanned >= max_scan,
-        }
+        _tenant_crm_get_connection(path, sheet_name=sheet_name)
+    except KeyError as e:
+        return {"error": str(e), "rows": []}
     except Exception as e:
         return {"error": str(e), "rows": []}
+
+    con = _tenant_crm_duck["con"]
+    idents = _tenant_crm_duck["identifiers"]
+    if not idents:
+        return {
+            "rows":    [],
+            "count":   0,
+            "message": "No columns in sheet",
+            "sheet":   _tenant_crm_duck.get("sheet"),
+            "path":    path,
+            "engine":  "duckdb",
+        }
+
+    quoted_cols = ", ".join(ident + " AS " + ident for ident in idents)
+    hay = "lower(concat_ws(' ', " + ", ".join(f"nullif({ident}, '')" for ident in idents) + "))"
+
+    q = (query or "").strip()
+    words = [w for w in q.lower().split() if w]
+
+    try:
+        if not words:
+            sql = f"SELECT {quoted_cols} FROM {tbl} LIMIT ?"
+            result = con.execute(sql, [limit]).fetchall()
+            cols = [d[0] for d in con.description]
+        else:
+            conds = [f"{hay} LIKE ?" for _ in words]
+            where = " AND ".join(conds)
+            params = [f"%{w}%" for w in words] + [limit]
+            sql = f"SELECT {quoted_cols} FROM {tbl} WHERE {where} LIMIT ?"
+            result = con.execute(sql, params).fetchall()
+            cols = [d[0] for d in con.description]
+
+        rows = [dict(zip(cols, r)) for r in result]
+        return {
+            "rows":       rows,
+            "count":      len(rows),
+            "sheet":      _tenant_crm_duck.get("sheet"),
+            "path":       path,
+            "engine":     "duckdb",
+            "table":      tbl,
+            "source_rows": _tenant_crm_duck.get("row_count"),
+            "truncated_load": _tenant_crm_duck.get("truncated", False),
+        }
+    except Exception as e:
+        return {"error": str(e), "rows": [], "engine": "duckdb"}
 
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
@@ -470,9 +582,10 @@ TOOLS = [
     {
         "name": "query_tenant_crm",
         "description": (
-            "Search the MMG Tenant CRM Excel database (local .xlsx). "
-            "Use when the user asks about tenants, properties, or data stored in the CRM spreadsheet. "
-            "Pass a short query to match text across all columns; leave query empty to list the first rows."
+            "Search the MMG Tenant CRM data: the .xlsx is loaded into an in-memory DuckDB table, "
+            "then filtered with SQL. Use for tenants, properties, or CRM spreadsheet questions. "
+            "Pass a short query to match text across columns (multi-word = all words must match); "
+            "leave query empty to list the first rows."
         ),
         "input_schema": {
             "type": "object",
@@ -1858,7 +1971,7 @@ Call upload_leads_to_hubspot() — it handles all field mapping automatically.
 Reply with ONE sentence summarising how many contacts were uploaded.
 
 **Tenant CRM spreadsheet:**
-When the user asks about tenants, lease history, or data in the MMG Tenant CRM Excel file, call query_tenant_crm with a short search query (or empty query to sample rows). Do not guess — read from the tool results.
+When the user asks about tenants, lease history, or data in the MMG Tenant CRM Excel file, call query_tenant_crm with a short search query (or empty query to sample rows). Data is queried via DuckDB in memory after loading the sheet. Do not guess — read from the tool results.
 
 ## Rules
 - Keep ALL post-tool responses to 1 sentence.
