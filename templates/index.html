@@ -395,6 +395,17 @@
                         </div>
                     </div>
 
+                    <!-- Tenant CRM -->
+                    <div class="bg-gray-50 rounded-xl p-4 space-y-3">
+                        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Tenant CRM</p>
+                        <p class="text-xs text-gray-400">Absolute path to your <code>MMG_Tenant_CRM.xlsx</code> file on this machine. The agent will query it as a database when relevant.</p>
+                        <div>
+                            <label class="block text-xs text-gray-500 mb-1">Excel File Path</label>
+                            <input id="input-crm-path" type="text" placeholder="/Users/jorge/Downloads/MMG_Tenant_CRM.xlsx"
+                                class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 font-mono">
+                        </div>
+                    </div>
+
                     <!-- Gmail App Password -->
                     <div class="bg-gray-50 rounded-xl p-4 space-y-3">
                         <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Gmail</p>
@@ -1115,6 +1126,13 @@ async function loadConnectors() {
                 configured: config.gmail,
                 action: 'settings',
             },
+            {
+                key: 'crm', name: 'Tenant CRM',
+                icon: 'fa-solid fa-table', color: 'text-green-600',
+                desc: 'Local Excel database of tenants and deals. Agent queries it automatically.',
+                configured: config.crm,
+                action: 'settings',
+            },
         ];
 
         grid.innerHTML = connectors.map(c => {
@@ -1206,9 +1224,10 @@ async function saveConfig() {
         model_provider:      currentProvider,
         gmail_address:      document.getElementById('input-gmail-address').value.trim(),
         gmail_app_password: document.getElementById('input-gmail-app-password').value.trim(),
+        crm_path:           document.getElementById('input-crm-path').value.trim(),
     };
 
-    const anyFilled = body.anthropic_key || body.apollo_key || body.hubspot_token || body.gemini_key || body.perplexity_key || body.model_provider;
+    const anyFilled = body.anthropic_key || body.apollo_key || body.hubspot_token || body.gemini_key || body.perplexity_key || body.model_provider || body.crm_path;
     if (!anyFilled) {
         const msg = document.getElementById('config-msg');
         msg.textContent = 'Please enter at least one key.';
@@ -1232,6 +1251,7 @@ async function saveConfig() {
         document.getElementById('input-perplexity').value       = '';
         document.getElementById('input-gmail-address').value      = '';
         document.getElementById('input-gmail-app-password').value = '';
+        document.getElementById('input-crm-path').value           = '';
 
         toggleSettings();
         const providerLabel = currentProvider === 'gemini'

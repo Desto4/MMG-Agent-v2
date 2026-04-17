@@ -177,8 +177,12 @@ LEAD_FIELDS = [
 
 
 def _tenant_crm_xlsx_path():
-    """Absolute path to MMG Tenant CRM spreadsheet (set in .env)."""
-    return (os.environ.get("TENANT_CRM_XLSX_PATH") or "").strip()
+    """Absolute path to MMG Tenant CRM spreadsheet (session > env)."""
+    from flask import session as _session
+    return (
+        (_session.get("crm_path") or "").strip()
+        or (os.environ.get("TENANT_CRM_XLSX_PATH") or "").strip()
+    )
 
 
 # In-memory DuckDB rebuilt when the source .xlsx path/mtime/sheet changes
@@ -2281,6 +2285,7 @@ def index():
 def get_config():
     _gmail_addr, _gmail_pw = _get_gmail_creds()
     gmail_connected = bool(_gmail_addr and _gmail_pw)
+    crm_path = (session.get("crm_path") or "").strip() or (os.getenv("TENANT_CRM_XLSX_PATH") or "").strip()
     return jsonify({
         "anthropic":      bool(session.get("anthropic_key")  or os.getenv("ANTHROPIC_API_KEY")),
         "apollo":         bool(session.get("apollo_key")     or os.getenv("APOLLO_API_KEY")),
@@ -2288,6 +2293,7 @@ def get_config():
         "gemini":         bool(session.get("gemini_key")       or os.getenv("GEMINI_API_KEY")),
         "perplexity":     bool(session.get("perplexity_key")   or os.getenv("PERPLEXITY_API_KEY")),
         "gmail":          gmail_connected,
+        "crm":            bool(crm_path) and os.path.isfile(crm_path),
         "model_provider":   session.get("model_provider",   "anthropic"),
         "claude_model":     session.get("claude_model",     "claude-opus-4-6"),
         "gemini_model":     session.get("gemini_model",     "gemini-3-flash-preview"),
@@ -2320,6 +2326,8 @@ def save_config():
         global _hunter_key
         _hunter_key = data["hunter_key"]
         session["hunter_key"] = data["hunter_key"]
+    if data.get("crm_path"):
+        session["crm_path"] = data["crm_path"].strip()
     if data.get("gmail_address") or data.get("gmail_app_password"):
         # Persist to file so credentials survive server restarts
         _gmail_app_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gmail_app.json")
