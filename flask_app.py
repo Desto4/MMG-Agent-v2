@@ -177,12 +177,27 @@ LEAD_FIELDS = [
 
 
 def _leads_db_xlsx_path():
-    """Absolute path to the MMG business leads Excel database (session > env)."""
+    """Absolute path to the MMG business leads Excel database (session > env > common defaults)."""
     from flask import session as _session
-    return (
+    explicit = (
         (_session.get("crm_path") or "").strip()
         or (os.environ.get("TENANT_CRM_XLSX_PATH") or "").strip()
     )
+    if explicit:
+        return explicit
+    # Auto-discover common drop locations so the file works without any setup
+    candidates = [
+        os.path.expanduser("~/Downloads/MMG_Tenant_CRM.xlsx"),
+        os.path.expanduser("~/Downloads/MMG Tenant CRM.xlsx"),
+        os.path.expanduser("~/Desktop/MMG_Tenant_CRM.xlsx"),
+        os.path.expanduser("~/Desktop/MMG Tenant CRM.xlsx"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "MMG_Tenant_CRM.xlsx"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "MMG Tenant CRM.xlsx"),
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return ""
 
 
 # In-memory DuckDB rebuilt when the source .xlsx path/mtime/sheet changes
