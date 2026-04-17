@@ -176,6 +176,114 @@ LEAD_FIELDS = [
 ]
 
 
+def _tenant_crm_xlsx_path():
+    """Absolute path to MMG Tenant CRM spreadsheet (set in .env)."""
+    return (os.environ.get("TENANT_CRM_XLSX_PATH") or "").strip()
+
+
+def query_tenant_crm(query="", sheet_name=None, limit=50):
+    """
+    Load rows from the Tenant CRM .xlsx and return rows matching a text query.
+    If query is empty, returns the first `limit` data rows.
+    """
+    path = _tenant_crm_xlsx_path()
+    if not path:
+        return {
+            "error": (
+                "Tenant CRM Excel path not set. Add TENANT_CRM_XLSX_PATH=/absolute/path/to/file.xlsx "
+                "to your .env file."
+            ),
+            "rows": [],
+        }
+    if not os.path.isfile(path):
+        return {"error": f"Tenant CRM file not found: {path}", "rows": []}
+
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return {"error": "openpyxl is not installed. Run: pip install -r requirements.txt", "rows": []}
+
+    limit = max(1, min(int(limit or 50), 200))
+    max_scan = 50_000
+
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        if sheet_name:
+            try:
+                ws = wb[sheet_name]
+            except KeyError:
+                names = list(wb.sheetnames)
+                wb.close()
+                return {
+                    "error": f"Sheet not found: {sheet_name!r}. Available: {names!r}",
+                    "rows": [],
+                }
+        else:
+            ws = wb.active
+
+        rows_iter = ws.iter_rows(values_only=True)
+        try:
+            header_row = next(rows_iter)
+        except StopIteration:
+            wb.close()
+            return {"rows": [], "count": 0, "message": "Sheet is empty", "sheet": ws.title}
+
+        headers = []
+        for i, h in enumerate(header_row):
+            if h is None or (isinstance(h, str) and not h.strip()):
+                headers.append(f"column_{i + 1}")
+            else:
+                headers.append(str(h).strip())
+
+        def _cell_val(v):
+            if v is None:
+                return ""
+            if hasattr(v, "isoformat"):
+                return v.isoformat()
+            return str(v).strip()
+
+        q = (query or "").strip().lower()
+        words = q.split() if q else []
+
+        out = []
+        scanned = 0
+        for row in rows_iter:
+            scanned += 1
+            if scanned > max_scan:
+                break
+            d = {}
+            for i, cell in enumerate(row):
+                if i >= len(headers):
+                    break
+                d[headers[i]] = _cell_val(cell)
+            if not any(str(v).strip() for v in d.values()):
+                continue
+            if not q:
+                out.append(d)
+            else:
+                hay = " ".join(str(v).lower() for v in d.values())
+                if len(words) <= 1:
+                    if q in hay:
+                        out.append(d)
+                else:
+                    if all(w in hay for w in words):
+                        out.append(d)
+            if len(out) >= limit:
+                break
+
+        wb.close()
+        return {
+            "rows":       out,
+            "count":      len(out),
+            "sheet":      ws.title,
+            "path":       path,
+            "scanned":    scanned,
+            "truncated":  scanned >= max_scan,
+        }
+    except Exception as e:
+        return {"error": str(e), "rows": []}
+
+
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
 TOOLS = [
@@ -356,6 +464,33 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "query_tenant_crm",
+        "description": (
+            "Search the MMG Tenant CRM Excel database (local .xlsx). "
+            "Use when the user asks about tenants, properties, or data stored in the CRM spreadsheet. "
+            "Pass a short query to match text across all columns; leave query empty to list the first rows."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Text to find across columns (case-insensitive). Empty = first rows only.",
+                },
+                "sheet_name": {
+                    "type": "string",
+                    "description": "Optional Excel sheet name. Omit to use the first sheet.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows to return (default 50, max 200)",
+                    "default": 50,
+                },
+            },
             "required": [],
         },
     },
@@ -1647,6 +1782,7 @@ TOOL_MAP = {
     "apollo_search_people":   apollo_search_people,
     "enrich_leads_batch":     enrich_leads_batch,
     "get_collected_leads":      get_collected_leads,
+    "query_tenant_crm":         query_tenant_crm,
     "upload_leads_to_hubspot":  upload_leads_to_hubspot,
     "sunbiz_lookup":            sunbiz_lookup,
     "scrape_website_contact": scrape_website_contact,
@@ -1720,6 +1856,9 @@ Each email should:
 NEVER search for new leads. NEVER enrich leads. NEVER call hubspot_create_contact manually.
 Call upload_leads_to_hubspot() — it handles all field mapping automatically.
 Reply with ONE sentence summarising how many contacts were uploaded.
+
+**Tenant CRM spreadsheet:**
+When the user asks about tenants, lease history, or data in the MMG Tenant CRM Excel file, call query_tenant_crm with a short search query (or empty query to sample rows). Do not guess — read from the tool results.
 
 ## Rules
 - Keep ALL post-tool responses to 1 sentence.
