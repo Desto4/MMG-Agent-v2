@@ -247,9 +247,9 @@ def _tenant_crm_unique_sql_idents(headers):
 
 def _tenant_crm_load_into_duckdb(path, sheet_name=None):
     """
-    Read .xlsx and write a persistent DuckDB file next to it.
-    The .db file is only rebuilt when the Excel mtime is newer.
-    Returns (sheet_title, rows_scanned).
+    Read ALL sheets from .xlsx into a single persistent DuckDB table with a
+    'sheet' column. The .db file is only rebuilt when the Excel mtime is newer.
+    Returns (sheets_loaded, total_rows_loaded).
     """
     try:
         from openpyxl import load_workbook
@@ -271,7 +271,6 @@ def _tenant_crm_load_into_duckdb(path, sheet_name=None):
             pass
         _tenant_crm_duck["con"] = None
 
-    # Rebuild .db only if Excel is newer or .db doesn't exist
     needs_rebuild = (
         not os.path.isfile(db_path)
         or os.path.getmtime(db_path) < xlsx_mtime
@@ -281,22 +280,16 @@ def _tenant_crm_load_into_duckdb(path, sheet_name=None):
 
     if needs_rebuild:
         wb = load_workbook(path, read_only=True, data_only=True)
-        if sheet_name:
-            try:
-                ws = wb[sheet_name]
-            except KeyError:
-                names = list(wb.sheetnames)
-                wb.close()
-                raise KeyError(f"Sheet not found: {sheet_name!r}. Available: {names!r}") from None
-        else:
-            ws = wb.active
+        sheet_names = wb.sheetnames
 
-        rows_iter = ws.iter_rows(values_only=True)
+        # Build schema from first sheet's header row (all sheets share the same columns)
+        first_ws = wb[sheet_names[0]]
+        first_rows = first_ws.iter_rows(values_only=True)
         try:
-            header_row = next(rows_iter)
+            header_row = next(first_rows)
         except StopIteration:
             wb.close()
-            raise ValueError("Sheet is empty") from None
+            raise ValueError("First sheet is empty") from None
 
         labels = []
         for i, h in enumerate(header_row):
@@ -306,66 +299,66 @@ def _tenant_crm_load_into_duckdb(path, sheet_name=None):
                 labels.append(str(h).strip())
 
         idents = _tenant_crm_unique_sql_idents(labels)
-        max_rows = 50_000
-        data_rows = []
-        scanned = 0
-        for row in rows_iter:
-            scanned += 1
-            if scanned > max_rows:
-                break
-            vals = []
-            nonempty = False
-            for j in range(len(idents)):
-                cell = row[j] if j < len(row) else None
-                s = _tenant_crm_cell_str(cell)
-                if s:
-                    nonempty = True
-                vals.append(s)
-            if nonempty:
-                data_rows.append(tuple(vals))
+        # Prepend a 'sheet' column so rows are filterable by industry/county
+        all_idents = ['"sheet"'] + idents
 
-        wb.close()
-
-        # Write persistent .db (overwrite)
         if os.path.isfile(db_path):
             os.remove(db_path)
         con = duckdb.connect(database=db_path)
-        cols_sql = ", ".join(f"{ident} VARCHAR" for ident in idents)
-        con.execute(f"CREATE TABLE IF NOT EXISTS {tbl} ({cols_sql})")
-        if data_rows:
-            placeholders = ", ".join(["?"] * len(idents))
-            con.executemany(
-                f"INSERT INTO {tbl} VALUES ({placeholders})",
-                data_rows,
-            )
+        cols_sql = '"sheet" VARCHAR, ' + ", ".join(f"{ident} VARCHAR" for ident in idents)
+        con.execute(f"CREATE TABLE {tbl} ({cols_sql})")
+        placeholders = ", ".join(["?"] * len(all_idents))
+
+        total_rows = 0
+        for sname in sheet_names:
+            ws = wb[sname]
+            rows_iter = ws.iter_rows(values_only=True)
+            next(rows_iter, None)  # skip header
+            batch = []
+            for row in rows_iter:
+                vals = [sname]
+                nonempty = False
+                for j in range(len(idents)):
+                    cell = row[j] if j < len(row) else None
+                    s = _tenant_crm_cell_str(cell)
+                    if s:
+                        nonempty = True
+                    vals.append(s)
+                if nonempty:
+                    batch.append(tuple(vals))
+            if batch:
+                con.executemany(f"INSERT INTO {tbl} VALUES ({placeholders})", batch)
+                total_rows += len(batch)
+
+        wb.close()
         con.close()
 
-        sheet_title = ws.title
-        row_count = len(data_rows)
-        truncated = scanned > max_rows
+        row_count = total_rows
+        truncated = False
+        scanned = total_rows
     else:
-        # .db is up to date — read schema from it to populate identifiers
+        # .db is up to date — read schema from it
         con_tmp = duckdb.connect(database=db_path, read_only=True)
         cols_info = con_tmp.execute(f"PRAGMA table_info('{tbl}')").fetchall()
         con_tmp.close()
-        idents = ['"' + row[1].replace('"', '""') + '"' for row in cols_info]
-        row_count = None   # don't recount — expensive
+        all_idents = ['"' + r[1].replace('"', '""') + '"' for r in cols_info]
+        idents = [i for i in all_idents if i != '"sheet"']
+        row_count = None
         truncated = False
         scanned = 0
-        sheet_title = sheet_name or ""
 
-    # Open persistent file for queries
+    # Keep idents without 'sheet' for text search; store all_idents for SELECT
     con = duckdb.connect(database=db_path, read_only=False)
 
-    _tenant_crm_duck["con"]        = con
-    _tenant_crm_duck["path"]       = path
-    _tenant_crm_duck["db_path"]    = db_path
-    _tenant_crm_duck["mtime"]      = xlsx_mtime
-    _tenant_crm_duck["sheet"]      = sheet_title
-    _tenant_crm_duck["row_count"]  = row_count
-    _tenant_crm_duck["identifiers"] = idents
-    _tenant_crm_duck["truncated"]  = truncated
-    return sheet_title, scanned
+    _tenant_crm_duck["con"]         = con
+    _tenant_crm_duck["path"]        = path
+    _tenant_crm_duck["db_path"]     = db_path
+    _tenant_crm_duck["mtime"]       = xlsx_mtime
+    _tenant_crm_duck["sheet"]       = "all sheets"
+    _tenant_crm_duck["row_count"]   = row_count
+    _tenant_crm_duck["identifiers"] = all_idents
+    _tenant_crm_duck["truncated"]   = truncated
+    return sheet_names if needs_rebuild else [], scanned
 
 
 def _tenant_crm_get_connection(path, sheet_name=None):
@@ -399,13 +392,17 @@ def _tenant_crm_get_connection(path, sheet_name=None):
 
     _tenant_crm_duck["sheet_requested"] = cache_sheet
 
-    # If .db exists and is up to date, just open it (no Excel read needed)
+    # If .db exists and is up to date, open it and reload schema if needed
     if (
         os.path.isfile(db_path)
         and os.path.getmtime(db_path) >= xlsx_mtime
-        and _tenant_crm_duck["identifiers"]  # schema already known in this process
     ):
         con = duckdb.connect(database=db_path, read_only=False)
+        if not _tenant_crm_duck["identifiers"]:
+            # Fresh process restart — load schema from existing .db
+            tbl = _tenant_crm_duck["table"]
+            cols_info = con.execute(f"PRAGMA table_info('{tbl}')").fetchall()
+            _tenant_crm_duck["identifiers"] = ['"' + r[1].replace('"', '""') + '"' for r in cols_info]
         _tenant_crm_duck["con"]     = con
         _tenant_crm_duck["path"]    = path
         _tenant_crm_duck["db_path"] = db_path
@@ -457,6 +454,7 @@ def query_tenant_crm(query="", sheet_name=None, limit=50):
         }
 
     quoted_cols = ", ".join(ident + " AS " + ident for ident in idents)
+    # Include all columns (including 'sheet') in the full-text search hay
     hay = "lower(concat_ws(' ', " + ", ".join(f"nullif({ident}, '')" for ident in idents) + "))"
 
     q = (query or "").strip()
