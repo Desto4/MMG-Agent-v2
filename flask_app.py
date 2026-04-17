@@ -176,8 +176,8 @@ LEAD_FIELDS = [
 ]
 
 
-def _tenant_crm_xlsx_path():
-    """Absolute path to MMG Tenant CRM spreadsheet (session > env)."""
+def _leads_db_xlsx_path():
+    """Absolute path to the MMG business leads Excel database (session > env)."""
     from flask import session as _session
     return (
         (_session.get("crm_path") or "").strip()
@@ -191,7 +191,7 @@ _tenant_crm_duck = {
     "path":         None,
     "mtime":        None,
     "sheet":        None,
-    "table":        "tenant_crm",
+    "table":        "leads_db",
     "row_count":    0,
     "identifiers": [],  # quoted SQL identifiers for SELECT / concat_ws
 }
@@ -328,21 +328,21 @@ def _tenant_crm_get_connection(path, sheet_name=None):
 
 def query_tenant_crm(query="", sheet_name=None, limit=50):
     """
-    Load the Tenant CRM .xlsx into an in-memory DuckDB database and query it.
+    Load the MMG business leads Excel database into in-memory DuckDB and query it.
     If query is empty, returns the first `limit` rows; otherwise filters rows whose
     concatenated column text matches (all words must appear for multi-word queries).
     """
-    path = _tenant_crm_xlsx_path()
+    path = _leads_db_xlsx_path()
     if not path:
         return {
             "error": (
-                "Tenant CRM Excel path not set. Add TENANT_CRM_XLSX_PATH=/absolute/path/to/file.xlsx "
-                "to your .env file."
+                "Business leads database path not set. Add the Excel file path in Settings → Business Leads Database, "
+                "or set TENANT_CRM_XLSX_PATH in your .env file."
             ),
             "rows": [],
         }
     if not os.path.isfile(path):
-        return {"error": f"Tenant CRM file not found: {path}", "rows": []}
+        return {"error": f"Business leads database file not found: {path}", "rows": []}
 
     limit = max(1, min(int(limit or 50), 200))
     tbl = _tenant_crm_duck["table"]
@@ -586,11 +586,12 @@ TOOLS = [
     {
         "name": "query_tenant_crm",
         "description": (
-            "Local MMG Tenant CRM (Excel → in-memory DuckDB, fast SQL). "
-            "Use PROACTIVELY whenever the user's question could be answered from your saved tenant/property/deal/pipeline "
-            "records — do NOT wait for them to say 'CRM' or 'spreadsheet'. Prefer this over web_search for internal MMG data. "
-            "Examples: lease status, tenant names, addresses, buildings, contacts, notes, history, lists, counts, lookups. "
-            "Pass keywords from their question as `query`; use empty `query` to sample rows or infer columns. "
+            "MMG local business leads database (Excel → in-memory DuckDB, fast SQL). "
+            "Contains businesses across industries in Miami-Dade and Broward counties — use this as a PRE-LOADED "
+            "source of prospects before going to Maps or the web. "
+            "Call PROACTIVELY whenever the user asks about businesses, industries, leads, contacts, or counties "
+            "without waiting for them to say 'database' or 'Excel'. "
+            "Pass keywords (industry, city, county, business name) as `query`; empty `query` samples the first rows. "
             "Multi-word query = all words must appear somewhere in the row."
         ),
         "input_schema": {
@@ -1976,8 +1977,8 @@ NEVER search for new leads. NEVER enrich leads. NEVER call hubspot_create_contac
 Call upload_leads_to_hubspot() — it handles all field mapping automatically.
 Reply with ONE sentence summarising how many contacts were uploaded.
 
-**Tenant CRM (proactive):**
-You have a local Tenant CRM database (`query_tenant_crm`). Whenever a question could plausibly be answered from MMG's own tenant/property/deal records — leases, pipeline, contacts, buildings, status, history, or anything that sounds like internal portfolio data — **call query_tenant_crm first** before web_search or guessing. The user does not need to mention "CRM" or "Excel". Use keywords from their message as the search `query`; if you need to see columns or aren't sure what to search, call it with an empty `query` to sample rows then refine. If the tool returns nothing relevant, say so briefly — do not invent rows. For **new lead discovery from the open market** (Maps search), keep using search_businesses_maps — the CRM tool is for your existing dataset, not for finding brand-new prospects online.
+**Business leads database (proactive):**
+You have a pre-loaded local database of businesses across industries in Miami-Dade and Broward counties (`query_tenant_crm`). Use it as your **first stop** for any lead request — it is faster than Maps search and already has business data ready. Call it proactively whenever the user asks for businesses, leads, or contacts in any industry or area, even if they don't mention "database" or "Excel". Pass industry/city/county keywords from their message as `query`; use empty `query` to see what columns and data exist. If the database returns no matches, then fall back to `search_businesses_maps` for live discovery. Do not invent rows — if the tool returns nothing, say so and offer to search Maps instead.
 
 ## Rules
 - Keep ALL post-tool responses to 1 sentence.

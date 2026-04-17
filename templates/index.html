@@ -395,10 +395,10 @@
                         </div>
                     </div>
 
-                    <!-- Tenant CRM -->
+                    <!-- Business Leads Database -->
                     <div class="bg-gray-50 rounded-xl p-4 space-y-3">
-                        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Tenant CRM</p>
-                        <p class="text-xs text-gray-400">Absolute path to your <code>MMG_Tenant_CRM.xlsx</code> file on this machine. The agent will query it as a database when relevant.</p>
+                        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Business Leads Database</p>
+                        <p class="text-xs text-gray-400">Absolute path to your Excel file of businesses (Miami-Dade &amp; Broward). The agent queries this first before searching Maps.</p>
                         <div>
                             <label class="block text-xs text-gray-500 mb-1">Excel File Path</label>
                             <input id="input-crm-path" type="text" placeholder="/Users/jorge/Downloads/MMG_Tenant_CRM.xlsx"
@@ -1127,9 +1127,9 @@ async function loadConnectors() {
                 action: 'settings',
             },
             {
-                key: 'crm', name: 'Tenant CRM',
+                key: 'crm', name: 'Business Leads DB',
                 icon: 'fa-solid fa-table', color: 'text-green-600',
-                desc: 'Local Excel database of tenants and deals. Agent queries it automatically.',
+                desc: 'Local Excel database of Miami-Dade & Broward businesses. Agent queries this first for any lead request.',
                 configured: config.crm,
                 action: 'settings',
             },
