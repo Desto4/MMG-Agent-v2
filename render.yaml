@@ -1,3 +1,9 @@
+databases:
+  - name: mmg-leads-db
+    plan: free
+    databaseName: mmg_leads
+    user: mmg
+
 services:
   - type: web
     name: mmg-agent
@@ -23,3 +29,7 @@ services:
         sync: false
       - key: GMAIL_APP_PASSWORD
         sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mmg-leads-db
+          property: connectionString

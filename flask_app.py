@@ -418,12 +418,17 @@ def _tenant_crm_get_connection(path, sheet_name=None):
 
 def query_tenant_crm(query="", sheet_name=None, limit=50):
     """
-    Load the MMG business leads Excel database into in-memory DuckDB and query it.
-    If query is empty, returns the first `limit` rows; otherwise filters rows whose
-    concatenated column text matches (all words must appear for multi-word queries).
+    Query the MMG business leads database.
+    Routes to Postgres when DATABASE_URL is set (Render), otherwise local DuckDB.
     """
     import logging
     log = logging.getLogger(__name__)
+
+    # Prefer Postgres when DATABASE_URL is available
+    if _pg_database_url():
+        log.info("[CRM] routing to Postgres: query=%r", query)
+        return _query_pg(query=query, limit=limit)
+
     path = _leads_db_xlsx_path()
     log.info("[CRM] query_tenant_crm called: query=%r path=%r", query, path)
     if not path:
@@ -496,6 +501,217 @@ def query_tenant_crm(query="", sheet_name=None, limit=50):
     except Exception as e:
         log.error("[CRM] SQL error: %s", e)
         return {"error": str(e), "rows": [], "engine": "duckdb"}
+
+
+# ── Postgres leads DB (used on Render / when DATABASE_URL is set) ─────────────
+
+_PG_TABLE   = "leads_db"
+_pg_loaded  = False   # True once data has been inserted into Postgres this process
+
+
+def _pg_database_url():
+    return (os.environ.get("DATABASE_URL") or "").strip()
+
+
+def _pg_database_url_ssl():
+    """
+    Reuse DATABASE_URL, but force sslmode=require when not already present.
+    """
+    url = _pg_database_url()
+    if not url:
+        return ""
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+    parts = urlsplit(url)
+    params = dict(parse_qsl(parts.query, keep_blank_values=True))
+    if "sslmode" not in params:
+        params["sslmode"] = "require"
+    query = urlencode(params)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+
+
+def _pg_connect():
+    """Return a new psycopg2 connection using DATABASE_URL + sslmode=require."""
+    import psycopg2
+    url = _pg_database_url_ssl()
+    return psycopg2.connect(url)
+
+
+def _pg_default_seed_csv_path():
+    """Fallback seed file for cloud deploys where local Excel path is unavailable."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "leads_data.csv")
+
+
+def _pg_safe_col(label: str, idx: int) -> str:
+    slug = re.sub(r"[^\w]", "_", (label or "")).strip("_").lower()
+    return slug or f"col_{idx+1}"
+
+
+def _pg_rows_from_xlsx(xlsx_path: str):
+    """Return (col_names, rows) parsed from all sheets in Excel."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(xlsx_path, read_only=True, data_only=True)
+    sheets = wb.sheetnames
+    first_iter = wb[sheets[0]].iter_rows(values_only=True)
+    header = next(first_iter)
+    labels = [str(h).strip() if h and str(h).strip() else f"col_{i+1}" for i, h in enumerate(header)]
+    col_names = ["sheet"] + [_pg_safe_col(label, i) for i, label in enumerate(labels)]
+
+    rows = []
+    for sname in sheets:
+        ws = wb[sname]
+        it = ws.iter_rows(values_only=True)
+        next(it, None)  # skip header
+        for row in it:
+            vals = [sname]
+            nonempty = False
+            for j in range(len(labels)):
+                cell = row[j] if j < len(row) else None
+                s = _tenant_crm_cell_str(cell)
+                if s:
+                    nonempty = True
+                vals.append(s)
+            if nonempty:
+                rows.append(tuple(vals))
+    wb.close()
+    return col_names, rows
+
+
+def _pg_rows_from_csv(csv_path: str):
+    """Return (col_names, rows) parsed from a seed CSV."""
+    import csv as _csv
+
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = _csv.DictReader(f)
+        fields = list(reader.fieldnames or [])
+        if not fields:
+            raise RuntimeError(f"Seed CSV has no header: {csv_path}")
+        col_names = [_pg_safe_col(name, i) for i, name in enumerate(fields)]
+        rows = []
+        for rec in reader:
+            vals = [str(rec.get(name, "") or "").strip() for name in fields]
+            if any(vals[1:]):  # keep rows that have non-empty business fields
+                rows.append(tuple(vals))
+    return col_names, rows
+
+
+def _pg_ensure_loaded(xlsx_path):
+    """
+    Create the leads_db table in Postgres if it doesn't exist.
+    Load data only if the table is empty (so redeploys don't re-import).
+    Source priority:
+      1) local Excel path (TENANT_CRM_XLSX_PATH / auto-discovery)
+      2) repository seed CSV (leads_data.csv) for Render/cloud
+    """
+    global _pg_loaded
+    import logging
+    log = logging.getLogger(__name__)
+
+    con = _pg_connect()
+    cur = con.cursor()
+
+    # If table already exists and has data, reuse it.
+    cur.execute("SELECT to_regclass(%s)", (_PG_TABLE,))
+    exists = cur.fetchone()[0] is not None
+    if exists:
+        cur.execute(f'SELECT COUNT(*) FROM "{_PG_TABLE}"')
+        count = cur.fetchone()[0]
+        if count > 0:
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = %s ORDER BY ordinal_position
+            """, (_PG_TABLE,))
+            col_names = [r[0] for r in cur.fetchall()]
+            cur.close(); con.close()
+            log.info("[PG] leads_db already has %d rows — skipping import", count)
+            _pg_loaded = True
+            return col_names
+        # Existing but empty table; recreate cleanly.
+        cur.execute(f'DROP TABLE IF EXISTS "{_PG_TABLE}"')
+        con.commit()
+
+    # Choose source rows
+    csv_path = _pg_default_seed_csv_path()
+    if xlsx_path and os.path.isfile(xlsx_path):
+        log.info("[PG] Seeding leads_db from Excel: %s", xlsx_path)
+        col_names, rows = _pg_rows_from_xlsx(xlsx_path)
+    elif os.path.isfile(csv_path):
+        log.info("[PG] Seeding leads_db from CSV: %s", csv_path)
+        col_names, rows = _pg_rows_from_csv(csv_path)
+    else:
+        cur.close(); con.close()
+        raise RuntimeError(
+            "No seed source available for Postgres. Expected Excel path or leads_data.csv."
+        )
+
+    cols_ddl = ", ".join(f'"{c}" TEXT' for c in col_names)
+    cur.execute(f'CREATE TABLE "{_PG_TABLE}" ({cols_ddl})')
+    con.commit()
+
+    if rows:
+        ph = ", ".join(["%s"] * len(col_names))
+        cur.executemany(f'INSERT INTO "{_PG_TABLE}" VALUES ({ph})', rows)
+        con.commit()
+    total = len(rows)
+
+    cur.close(); con.close()
+    log.info("[PG] Done — %d total rows loaded", total)
+    _pg_loaded = True
+    return col_names
+
+
+def _query_pg(query="", limit=50):
+    """Query the Postgres leads_db table. Returns same shape as DuckDB path."""
+    import logging
+    log = logging.getLogger(__name__)
+
+    xlsx_path = _leads_db_xlsx_path()
+    col_names = _pg_ensure_loaded(xlsx_path) if not _pg_loaded else None
+
+    # Fetch column names from DB if we didn't just load
+    con = _pg_connect()
+    cur = con.cursor()
+    if col_names is None:
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = %s ORDER BY ordinal_position
+        """, (_PG_TABLE,))
+        col_names = [r[0] for r in cur.fetchall()]
+
+    if not col_names:
+        cur.close(); con.close()
+        return {"error": "leads_db table has no columns", "rows": [], "engine": "postgres"}
+
+    cols_sql = ", ".join(f'"{c}"' for c in col_names)
+    hay = " || ' ' || ".join(f'COALESCE("{c}", \'\')' for c in col_names)
+
+    q = (query or "").strip()
+    words = [w for w in q.lower().split() if w]
+    limit = max(1, min(int(limit or 50), 200))
+
+    try:
+        if not words:
+            cur.execute(f'SELECT {cols_sql} FROM "{_PG_TABLE}" LIMIT %s', (limit,))
+        else:
+            conds = " AND ".join(f"lower({hay}) LIKE %s" for _ in words)
+            params = [f"%{w}%" for w in words] + [limit]
+            cur.execute(f'SELECT {cols_sql} FROM "{_PG_TABLE}" WHERE {conds} LIMIT %s', params)
+
+        rows = [dict(zip(col_names, r)) for r in cur.fetchall()]
+        cur.close(); con.close()
+        log.info("[PG] query returned %d rows for query=%r", len(rows), query)
+        return {
+            "rows":    rows,
+            "count":   len(rows),
+            "engine":  "postgres",
+            "table":   _PG_TABLE,
+        }
+    except Exception as e:
+        cur.close(); con.close()
+        log.error("[PG] query error: %s", e)
+        return {"error": str(e), "rows": [], "engine": "postgres"}
 
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
