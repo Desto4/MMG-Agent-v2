@@ -40,6 +40,14 @@ _outreach_store = []
 _perf_store     = []   # performance records [{provider, model, duration_ms, ...}]
 _hunter_key     = ""   # Hunter.io API key (set from settings)
 
+# External system safety caps
+APOLLO_PULL_LIMIT  = 20
+HUBSPOT_PUSH_LIMIT = 20
+
+# External connector safety caps
+_APOLLO_MAX_RESULTS = 20
+_HUBSPOT_MAX_UPLOAD = 20
+
 # Gmail OAuth storage (persisted to file so server restarts don't lose it)
 _GMAIL_TOKEN_FILE   = os.path.join(os.path.dirname(__file__), ".gmail_token.json")
 _GMAIL_CLIENT_FILE  = os.path.join(os.path.dirname(__file__), ".gmail_client.json")
@@ -1018,7 +1026,8 @@ TOOLS = [
         "name": "apollo_search_people",
         "description": (
             "Search for companies/organizations on Apollo.io by keyword and location. "
-            "Only use this if the user explicitly asks for Apollo results."
+            "Only use this if the user explicitly asks for Apollo results. "
+            "Hard cap: returns at most 20 records per request."
         ),
         "input_schema": {
             "type": "object",
@@ -1026,7 +1035,7 @@ TOOLS = [
                 "keywords":    {"type": "string", "description": "Industry keywords, e.g. 'nail salon'"},
                 "locations":   {"type": "array", "items": {"type": "string"},
                                 "description": "Locations, e.g. ['Miami, FL']"},
-                "num_results": {"type": "integer", "description": "Number of results (max 50)", "default": 20},
+                "num_results": {"type": "integer", "description": "Number of results (max 20)", "default": 20},
             },
             "required": ["keywords"],
         },
@@ -1200,7 +1209,8 @@ TOOLS = [
         "description": (
             "Upload all collected leads to HubSpot CRM in one call. "
             "Use this whenever the user asks to upload or sync leads to HubSpot. "
-            "Handles all field mapping automatically — do NOT use hubspot_create_contact manually."
+            "Handles all field mapping automatically — do NOT use hubspot_create_contact manually. "
+            "Hard cap: uploads at most 20 leads per request."
         ),
         "input_schema": {
             "type": "object",
@@ -1488,9 +1498,11 @@ def apollo_search_people(keywords=None, locations=None, num_results=20, _apollo_
     apollo_key = _apollo_key or os.getenv("APOLLO_API_KEY", "")
     if not apollo_key:
         return {"error": "Apollo API key not configured. Please set it in Settings."}
+    requested = int(num_results or 20)
+    effective = min(requested, APOLLO_PULL_LIMIT)
     payload = {
         "page":                        1,
-        "per_page":                    min(num_results or 20, 50),
+        "per_page":                    effective,
         "q_organization_keyword_tags": [keywords] if keywords else [],
         "organization_locations":      locations or [],
     }
@@ -1563,7 +1575,13 @@ def apollo_search_people(keywords=None, locations=None, num_results=20, _apollo_
 
         _leads_store = leads
         _save_leads_to_file(leads)
-        return {"leads": leads, "total": len(leads)}
+        return {
+            "leads": leads,
+            "total": len(leads),
+            "requested": requested,
+            "limit_applied": effective,
+            "capped": requested > APOLLO_PULL_LIMIT,
+        }
     except Exception as e:
         return {"error": str(e)}
 
@@ -2075,11 +2093,18 @@ def upload_leads_to_hubspot(_hubspot_token=None):
         if l.get("owner_email") or l.get("general_email") or l.get("reg_agent_email")
     ]
     skipped_no_email = len(_leads_store) - len(leads_with_email)
+    requested_upload = len(leads_with_email)
+    leads_with_email = leads_with_email[:HUBSPOT_PUSH_LIMIT]
+    skipped_over_limit = max(0, requested_upload - HUBSPOT_PUSH_LIMIT)
 
     results = {
-        "uploaded": 0, "skipped": skipped_no_email, "errors": [],
+        "uploaded": 0, "skipped": skipped_no_email + skipped_over_limit, "errors": [],
         "contacts": [],
         "no_email_count": skipped_no_email,
+        "requested": requested_upload,
+        "limit_applied": HUBSPOT_PUSH_LIMIT,
+        "capped": requested_upload > HUBSPOT_PUSH_LIMIT,
+        "skipped_over_limit": skipped_over_limit,
     }
 
     for lead in leads_with_email:
