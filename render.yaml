@@ -7,3 +7,19 @@ services:
     envVars:
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: /opt/render/project/.browsers
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: APOLLO_API_KEY
+        sync: false
+      - key: HUBSPOT_TOKEN
+        sync: false
+      - key: HUNTER_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: PERPLEXITY_API_KEY
+        sync: false
+      - key: GMAIL_ADDRESS
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
