@@ -9,11 +9,18 @@ import email.mime.text
 from datetime import datetime
 from urllib.parse import quote_plus, urljoin, urlparse
 
-# Load .env file if present (so keys don't need to be entered in the UI)
+# Load .env so keys work locally without pasting them in the UI every time.
+# 1) Next to this file (project root) — preferred
+# 2) Current working directory — fills any vars still missing (e.g. you ran Flask from another folder)
 try:
     from dotenv import load_dotenv
-    _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    load_dotenv(_env_path, override=True)
+    _app_dir = os.path.dirname(os.path.abspath(__file__))
+    _env_project = os.path.join(_app_dir, ".env")
+    if os.path.isfile(_env_project):
+        load_dotenv(_env_project, override=True)
+    _env_cwd = os.path.join(os.getcwd(), ".env")
+    if os.path.isfile(_env_cwd) and os.path.normpath(_env_cwd) != os.path.normpath(_env_project):
+        load_dotenv(_env_cwd, override=False)
 except ImportError:
     pass
 
