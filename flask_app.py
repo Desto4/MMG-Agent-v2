@@ -2128,30 +2128,45 @@ def get_google_reviews(business_name, city="", state=""):
                 time.sleep(4)
 
             html = page.content()
+
+            # Strategy 1: scan aria-label attributes (must happen BEFORE browser.close)
+            for el in page.query_selector_all('[aria-label]'):
+                try:
+                    lbl = el.get_attribute("aria-label") or ""
+                    if not rating:
+                        rm = re.search(r'(\d[\.,]\d)\s*stars?', lbl, re.IGNORECASE)
+                        if rm:
+                            rating = rm.group(1).replace(",", ".")
+                        else:
+                            rm2 = re.search(r'^(\d)\s*stars?$', lbl.strip(), re.IGNORECASE)
+                            if rm2:
+                                rating = rm2.group(1)
+                    if not count:
+                        cm = re.search(r'([\d,]+)\s*reviews?', lbl, re.IGNORECASE)
+                        if cm:
+                            count = cm.group(1).replace(",", "")
+                    if rating and count:
+                        break
+                except Exception:
+                    continue
+
+            # Strategy 3: visible text in known containers (also before close)
+            if not rating:
+                for sel in ('span.ceNzKf', 'div.F7nice > span', 'span.fontBodyMedium'):
+                    try:
+                        el = page.query_selector(sel)
+                        if el:
+                            txt = el.inner_text().strip()
+                            rm = re.search(r'(\d[\.,]\d)', txt)
+                            if rm:
+                                rating = rm.group(1).replace(",", ".")
+                                break
+                    except Exception:
+                        continue
+
             browser.close()
 
-        # Strategy 1: scan all aria-label attributes
-        for el in page.query_selector_all('[aria-label]'):
-            try:
-                lbl = el.get_attribute("aria-label") or ""
-                if not rating:
-                    rm = re.search(r'(\d[\.,]\d)\s*stars?', lbl, re.IGNORECASE)
-                    if rm:
-                        rating = rm.group(1).replace(",", ".")
-                    else:
-                        rm2 = re.search(r'^(\d)\s*stars?$', lbl.strip(), re.IGNORECASE)
-                        if rm2:
-                            rating = rm2.group(1)
-                if not count:
-                    cm = re.search(r'([\d,]+)\s*reviews?', lbl, re.IGNORECASE)
-                    if cm:
-                        count = cm.group(1).replace(",", "")
-                if rating and count:
-                    break
-            except Exception:
-                continue
-
-        # Strategy 2: regex scan on full HTML
+        # Strategy 2: regex scan on full HTML string (no browser needed)
         if not rating:
             rm = re.search(r'(\d[\.,]\d)\s*stars?', html, re.IGNORECASE)
             if rm:
@@ -2160,20 +2175,6 @@ def get_google_reviews(business_name, city="", state=""):
             cm = re.search(r'([\d,]+)\s*reviews?', html, re.IGNORECASE)
             if cm:
                 count = cm.group(1).replace(",", "")
-
-        # Strategy 3: visible text in known containers
-        if not rating:
-            for sel in ('span.ceNzKf', 'div.F7nice > span', 'span.fontBodyMedium'):
-                try:
-                    el = page.query_selector(sel)
-                    if el:
-                        txt = el.inner_text().strip()
-                        rm = re.search(r'(\d[\.,]\d)', txt)
-                        if rm:
-                            rating = rm.group(1).replace(",", ".")
-                            break
-                except Exception:
-                    continue
 
     except Exception:
         pass
@@ -2532,6 +2533,8 @@ def enrich_leads_batch(leads=None):
     shared list; returns the fully enriched leads list and saves to CSV.
     """
     import concurrent.futures
+    import logging as _logging
+    _elog = _logging.getLogger(__name__)
     global _leads_store
 
     # Be tolerant if the model forgets to pass leads:
@@ -2572,8 +2575,10 @@ def enrich_leads_batch(leads=None):
                 result["reg_agent_address"] = sb.get("reg_agent_address", "")
                 if sb.get("owner_name") and not result.get("owner_name"):
                     result["owner_name"] = sb.get("owner_name", "")
-        except Exception:
-            pass
+            else:
+                _elog.warning("[enrich] Sunbiz not found for: %s", name)
+        except Exception as e:
+            _elog.warning("[enrich] Sunbiz error for %s: %s", name, e)
 
         # 2. Website scrape — general email, Instagram, Facebook
         if url:
@@ -2585,11 +2590,10 @@ def enrich_leads_batch(leads=None):
                     result["instagram_url"] = ws["instagram_url"]
                 if ws.get("facebook_url") and not result.get("facebook_url"):
                     result["facebook_url"] = ws["facebook_url"]
-                # Pull any phone from website if business_phone still blank
                 if not result.get("business_phone") and ws.get("phones"):
                     result["business_phone"] = ws["phones"][0]
-            except Exception:
-                pass
+            except Exception as e:
+                _elog.warning("[enrich] Website scrape error for %s: %s", name, e)
 
         # 2b. Hunter.io — fill general_email if still blank
         if url and not result.get("general_email"):
@@ -2597,10 +2601,10 @@ def enrich_leads_batch(leads=None):
                 hunter_email = _hunter_domain_search(url)
                 if hunter_email:
                     result["general_email"] = hunter_email
-            except Exception:
-                pass
+            except Exception as e:
+                _elog.warning("[enrich] Hunter error for %s: %s", name, e)
 
-        # 3. Google reviews — rating + count (skip if already populated from Maps)
+        # 3. Google Maps reviews — rating + count
         if not (result.get("google_rating") and result.get("google_review_count")):
             try:
                 gr = get_google_reviews(name, city, state)
@@ -2608,8 +2612,10 @@ def enrich_leads_batch(leads=None):
                     result["google_rating"] = gr["google_rating"]
                 if gr.get("google_review_count"):
                     result["google_review_count"] = gr["google_review_count"]
-            except Exception:
-                pass
+                if not gr.get("google_rating"):
+                    _elog.warning("[enrich] No Google rating found for: %s", name)
+            except Exception as e:
+                _elog.warning("[enrich] Google reviews error for %s: %s", name, e)
 
         # 4. Owner contact — email + cell phone via web search
         owner = result.get("owner_name", "")
@@ -2620,8 +2626,8 @@ def enrich_leads_batch(leads=None):
                     result["owner_email"] = oc["email"]
                 if oc.get("phone") and not result.get("owner_phone"):
                     result["owner_phone"] = oc["phone"]
-            except Exception:
-                pass
+            except Exception as e:
+                _elog.warning("[enrich] Owner contact error for %s: %s", name, e)
 
         # 5. Registered agent contact — email + cell phone via web search
         agent = result.get("registered_agent", "")
@@ -2632,8 +2638,8 @@ def enrich_leads_batch(leads=None):
                     result["reg_agent_email"] = ac["email"]
                 if ac.get("phone") and not result.get("reg_agent_phone"):
                     result["reg_agent_phone"] = ac["phone"]
-            except Exception:
-                pass
+            except Exception as e:
+                _elog.warning("[enrich] Agent contact error for %s: %s", name, e)
 
         # If no email found anywhere, generate a placeholder from trade name
         if not result.get("general_email") and not result.get("owner_email"):
