@@ -2155,13 +2155,26 @@ def _find_person_contact(name, business_name="", city="", state=""):
     return {"email": "", "phone": ""}
 
 
-def enrich_leads_batch(leads):
+def enrich_leads_batch(leads=None):
     """
     Enrich every lead in the list with Sunbiz, website contact info, and
     Google Maps reviews — all in one tool call.  Yields progress via a
     shared list; returns the fully enriched leads list and saves to CSV.
     """
     import concurrent.futures
+    global _leads_store
+
+    # Be tolerant if the model forgets to pass leads:
+    # fall back to the currently collected leads in session memory.
+    if leads is None:
+        leads = _leads_store
+    if not leads:
+        return {
+            "error": (
+                "No leads provided to enrich. Please run a lead search first "
+                "or pass a `leads` array into enrich_leads_batch."
+            )
+        }
 
     enriched = []
 
@@ -2274,7 +2287,6 @@ def enrich_leads_batch(leads):
     # Keep all leads regardless of Sunbiz status — inactive flag shown in UI
 
     # Save to CSV
-    global _leads_store
     _leads_store = enriched
     _save_leads_to_file(enriched)
 
