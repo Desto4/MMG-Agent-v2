@@ -1739,14 +1739,70 @@ def apollo_search_people(keywords=None, locations=None, num_results=20, _apollo_
         return {"error": str(e)}
 
 
+def _sunbiz_name_variants(business_name: str):
+    """Generate ranked search variants so we don't miss filings registered under slight variations."""
+    if not business_name:
+        return []
+    raw = business_name.strip()
+    variants = [raw]
+
+    cleaned = re.sub(r"[\u2018\u2019\u201c\u201d]", "'", raw)
+    cleaned = re.sub(r"\s+&\s+", " AND ", cleaned)
+    if cleaned != raw:
+        variants.append(cleaned)
+
+    no_punct = re.sub(r"[^\w\s'&]", " ", raw)
+    no_punct = re.sub(r"\s+", " ", no_punct).strip()
+    if no_punct and no_punct not in variants:
+        variants.append(no_punct)
+
+    suffix_pat = re.compile(
+        r"\s*\b(LLC|L\.L\.C\.|INC|INC\.|CORP|CORPORATION|CO|COMPANY|LTD|LIMITED|"
+        r"PA|PLLC|PLC|HOLDINGS?|GROUP|ENTERPRISES?|SERVICES?|ASSOCIATES?)\b\.?\s*$",
+        re.IGNORECASE,
+    )
+    stripped = suffix_pat.sub("", raw).strip()
+    if stripped and stripped not in variants:
+        variants.append(stripped)
+
+    paren_free = re.sub(r"\s*\([^)]*\)\s*", " ", raw).strip()
+    paren_free = re.sub(r"\s+", " ", paren_free)
+    if paren_free and paren_free not in variants:
+        variants.append(paren_free)
+
+    words = [w for w in re.split(r"\s+", stripped or raw) if w]
+    if len(words) >= 3:
+        head = " ".join(words[:3])
+        if head not in variants:
+            variants.append(head)
+    if len(words) >= 2:
+        head = " ".join(words[:2])
+        if head not in variants:
+            variants.append(head)
+
+    seen = set()
+    out = []
+    for v in variants:
+        v = v.strip()
+        key = v.lower()
+        if v and key not in seen:
+            seen.add(key)
+            out.append(v)
+    return out
+
+
 def sunbiz_lookup(business_name):
     """
-    Search Florida Sunbiz corporate registry using a headless browser
-    (required to bypass Cloudflare protection on search.sunbiz.org).
-    Returns entity name, formation date, status, registered agent, and owner.
+    Search Florida Sunbiz corporate registry using a headless browser.
+    Tries multiple name variants (suffix-stripped, first 2 words, etc.) so
+    near-matches are still returned. Returns entity name, filing date,
+    status, registered agent, and owner.
     """
     from playwright.sync_api import sync_playwright
-    import time
+    import time, logging as _logging
+    log = _logging.getLogger(__name__)
+
+    variants = _sunbiz_name_variants(business_name)
 
     try:
         with sync_playwright() as pw:
@@ -1761,58 +1817,64 @@ def sunbiz_lookup(business_name):
             )
             page = context.new_page()
 
-            # ── Step 1: submit the search form ──
-            page.goto(
-                "https://search.sunbiz.org/Inquiry/CorporationSearch/ByName",
-                wait_until="domcontentloaded", timeout=30000,
-            )
-            time.sleep(0.5)
-            page.fill("#SearchTerm", business_name)
-            page.click("input[type=submit]")
-            page.wait_for_load_state("domcontentloaded", timeout=15000)
-            time.sleep(1.5)
-
-            html = page.content()
-
-            # Collect all result links + their display names
-            result_pairs = re.findall(
-                r'href="(/Inquiry/CorporationSearch/SearchResultDetail[^"]+)"[^>]*>\s*([^<]+?)\s*</a>',
-                html,
-            )
-            if not result_pairs:
-                browser.close()
-                return {"found": False, "searched": business_name}
-
-            # Pick the best-matching result using word-level overlap scoring
             def _name_score(search, candidate):
-                """Score candidate against search using word overlap (higher = better match)."""
                 s_words = set(re.sub(r"[^a-z0-9\s]", "", search.lower()).split())
                 c_words = set(re.sub(r"[^a-z0-9\s]", "", candidate.lower().replace("&amp;", "")).split())
-                # Remove common noise words
                 noise = {"llc", "inc", "corp", "ltd", "co", "the", "a", "of", "and", "&"}
                 s_core = s_words - noise
                 c_core = c_words - noise
                 if not s_core:
                     return 0
-                # Exact word matches weighted more heavily
                 exact = len(s_core & c_core)
-                # Partial/substring matches
                 partial = sum(1 for sw in s_core for cw in c_core if sw in cw or cw in sw) - exact
-                # Penalize length difference
                 length_penalty = abs(len(s_core) - len(c_core)) * 0.1
                 return exact * 2 + partial * 0.5 - length_penalty
 
-            best_href, best_score = result_pairs[0][0], -1
-            for href, name in result_pairs:
-                score = _name_score(business_name, name)
-                if score > best_score:
-                    best_score = score
-                    best_href = href
+            best_href = ""
+            best_score = -1
+            best_query = ""
 
-            # ── Step 2: load the detail page ──
+            for query in variants:
+                try:
+                    page.goto(
+                        "https://search.sunbiz.org/Inquiry/CorporationSearch/ByName",
+                        wait_until="domcontentloaded", timeout=30000,
+                    )
+                    time.sleep(0.4)
+                    page.fill("#SearchTerm", query)
+                    page.click("input[type=submit]")
+                    page.wait_for_load_state("domcontentloaded", timeout=15000)
+                    time.sleep(1.2)
+                    html_results = page.content()
+                except Exception as e:
+                    log.warning("[sunbiz] search failed for %r: %s", query, e)
+                    continue
+
+                result_pairs = re.findall(
+                    r'href="(/Inquiry/CorporationSearch/SearchResultDetail[^"]+)"[^>]*>\s*([^<]+?)\s*</a>',
+                    html_results,
+                )
+                if not result_pairs:
+                    continue
+
+                for href, name in result_pairs:
+                    score = _name_score(business_name, name)
+                    if score > best_score:
+                        best_score = score
+                        best_href = href
+                        best_query = query
+
+                # If first variant already found a confident match, stop searching
+                if best_score >= 2:
+                    break
+
+            if not best_href:
+                browser.close()
+                return {"found": False, "searched": business_name, "tried": variants}
+
             detail_url = "https://search.sunbiz.org" + best_href.replace("&amp;", "&")
             page.goto(detail_url, wait_until="domcontentloaded", timeout=30000)
-            time.sleep(1.5)
+            time.sleep(1.4)
             html = page.content()
             browser.close()
 
@@ -2092,96 +2154,173 @@ def _hunter_domain_search(domain):
 
 def get_google_reviews(business_name, city="", state=""):
     """
-    Use a headless browser to open Google Maps, click the first result,
-    and extract the business's star rating and Google review count
-    from aria-label attributes in the detail panel.
+    Open Google Maps for the business and extract:
+      - star rating + review count
+      - website URL (when listed in the panel)
+      - address + business phone (when present)
+    Tries multiple query variants so we don't return blanks for businesses
+    that ARE on Maps under a slightly different query.
     """
     from playwright.sync_api import sync_playwright
-    import time
+    import time, logging as _logging
+    log = _logging.getLogger(__name__)
 
-    query  = f"{business_name} {city} {state}".strip()
-    rating = ""
-    count  = ""
+    rating  = ""
+    count   = ""
+    website = ""
+    address = ""
+    phone   = ""
+    html    = ""
 
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 800},
-            )
-            page = context.new_page()
-            page.goto(
-                f"https://www.google.com/maps/search/{quote_plus(query)}",
-                wait_until="domcontentloaded", timeout=20000,
-            )
-            time.sleep(2)
+    queries = []
+    base = (business_name or "").strip()
+    loc  = " ".join([p for p in [city, state] if p]).strip()
+    if base and loc:
+        queries.append(f"{base} {loc}")
+    if base:
+        queries.append(base)
+    if base and city:
+        queries.append(f"{base} {city}")
+    if base and state and not loc:
+        queries.append(f"{base} {state}")
+    seen_q = set()
+    queries = [q for q in queries if not (q in seen_q or seen_q.add(q))]
 
-            # Click the first result to open the business detail panel
-            first = page.query_selector("a.hfpxzc")
-            if first:
-                first.click()
-                time.sleep(4)
+    def _scrape(query):
+        nonlocal rating, count, website, address, phone, html
+        try:
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+                )
+                context = browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1280, "height": 800},
+                    locale="en-US",
+                )
+                page = context.new_page()
+                page.goto(
+                    f"https://www.google.com/maps/search/{quote_plus(query)}",
+                    wait_until="domcontentloaded", timeout=25000,
+                )
+                page.wait_for_timeout(2200)
 
-            html = page.content()
-
-            # Strategy 1: scan aria-label attributes (must happen BEFORE browser.close)
-            for el in page.query_selector_all('[aria-label]'):
-                try:
-                    lbl = el.get_attribute("aria-label") or ""
-                    if not rating:
-                        rm = re.search(r'(\d[\.,]\d)\s*stars?', lbl, re.IGNORECASE)
-                        if rm:
-                            rating = rm.group(1).replace(",", ".")
-                        else:
-                            rm2 = re.search(r'^(\d)\s*stars?$', lbl.strip(), re.IGNORECASE)
-                            if rm2:
-                                rating = rm2.group(1)
-                    if not count:
-                        cm = re.search(r'([\d,]+)\s*reviews?', lbl, re.IGNORECASE)
-                        if cm:
-                            count = cm.group(1).replace(",", "")
-                    if rating and count:
-                        break
-                except Exception:
-                    continue
-
-            # Strategy 3: visible text in known containers (also before close)
-            if not rating:
-                for sel in ('span.ceNzKf', 'div.F7nice > span', 'span.fontBodyMedium'):
+                first = page.query_selector("a.hfpxzc")
+                if first:
                     try:
-                        el = page.query_selector(sel)
-                        if el:
-                            txt = el.inner_text().strip()
-                            rm = re.search(r'(\d[\.,]\d)', txt)
+                        first.click()
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(4500)
+
+                html = page.content()
+
+                if not website:
+                    try:
+                        for sel in (
+                            'a[data-item-id="authority"]',
+                            'a[aria-label*="website" i]',
+                            'a[data-tooltip*="website" i]',
+                        ):
+                            el = page.query_selector(sel)
+                            if el:
+                                href = el.get_attribute("href") or ""
+                                if href and not href.startswith("https://www.google"):
+                                    website = href.split("?")[0].rstrip("/")
+                                    break
+                    except Exception:
+                        pass
+
+                if not address:
+                    try:
+                        for sel in (
+                            '[data-item-id="address"] .Io6YTe',
+                            'button[data-item-id="address"] .Io6YTe',
+                        ):
+                            el = page.query_selector(sel)
+                            if el:
+                                address = (el.inner_text() or "").strip()
+                                if address:
+                                    break
+                    except Exception:
+                        pass
+
+                if not phone:
+                    try:
+                        for sel in (
+                            '[data-item-id*="phone:tel"] .Io6YTe',
+                            'button[data-tooltip="Copy phone number"] .Io6YTe',
+                        ):
+                            el = page.query_selector(sel)
+                            if el:
+                                phone = (el.inner_text() or "").strip()
+                                if phone:
+                                    break
+                    except Exception:
+                        pass
+
+                for el in page.query_selector_all('[aria-label]'):
+                    try:
+                        lbl = el.get_attribute("aria-label") or ""
+                        if not rating:
+                            rm = re.search(r'(\d[\.,]\d)\s*stars?', lbl, re.IGNORECASE)
                             if rm:
                                 rating = rm.group(1).replace(",", ".")
-                                break
+                            else:
+                                rm2 = re.search(r'^(\d)\s*stars?$', lbl.strip(), re.IGNORECASE)
+                                if rm2:
+                                    rating = rm2.group(1)
+                        if not count:
+                            cm = re.search(r'([\d,]+)\s*reviews?', lbl, re.IGNORECASE)
+                            if cm:
+                                count = cm.group(1).replace(",", "")
+                        if rating and count:
+                            break
                     except Exception:
                         continue
 
-            browser.close()
+                if not rating:
+                    for sel in ('span.ceNzKf', 'div.F7nice > span', 'span.fontBodyMedium'):
+                        try:
+                            el = page.query_selector(sel)
+                            if el:
+                                txt = (el.inner_text() or "").strip()
+                                rm = re.search(r'(\d[\.,]\d)', txt)
+                                if rm:
+                                    rating = rm.group(1).replace(",", ".")
+                                    break
+                        except Exception:
+                            continue
 
-        # Strategy 2: regex scan on full HTML string (no browser needed)
+                browser.close()
+        except Exception as e:
+            log.warning("[maps] scrape failed for %r: %s", query, e)
+
         if not rating:
-            rm = re.search(r'(\d[\.,]\d)\s*stars?', html, re.IGNORECASE)
+            rm = re.search(r'(\d[\.,]\d)\s*stars?', html or "", re.IGNORECASE)
             if rm:
                 rating = rm.group(1).replace(",", ".")
         if not count:
-            cm = re.search(r'([\d,]+)\s*reviews?', html, re.IGNORECASE)
+            cm = re.search(r'([\d,]+)\s*reviews?', html or "", re.IGNORECASE)
             if cm:
                 count = cm.group(1).replace(",", "")
 
-    except Exception:
-        pass
+    for q in queries:
+        _scrape(q)
+        if rating and count and website:
+            break
 
     return {
         "google_rating":       rating,
         "google_review_count": count,
+        "website":             website,
+        "address":             address,
+        "business_phone":      phone,
     }
 
 
@@ -2553,49 +2692,84 @@ def enrich_leads_batch(leads=None):
 
     def _enrich_one(lead):
         result = dict(lead)
-        # Ensure all LEAD_FIELDS keys exist (blank by default)
         for f in LEAD_FIELDS:
             result.setdefault(f, "")
 
         name  = result.get("trade_name", "")
-        url   = result.get("website", "")
         city  = result.get("city", "")
         state = result.get("state", "")
 
-        # 1. Sunbiz — entity name, formation date, owner, registered agent
+        sources = {
+            "sunbiz":  False,
+            "google":  False,
+            "website": False,
+            "apollo":  False,
+        }
+
+        # 1. Google Maps FIRST — gives us website, address, phone, rating, reviews.
+        #    Doing this first means subsequent steps (website scrape, Apollo) work
+        #    even when the lead came in without a website URL.
+        if not (result.get("google_rating") and result.get("google_review_count") and result.get("website")):
+            try:
+                gr = get_google_reviews(name, city, state)
+                if gr.get("google_rating"):
+                    result["google_rating"] = gr["google_rating"]
+                    sources["google"] = True
+                if gr.get("google_review_count"):
+                    result["google_review_count"] = gr["google_review_count"]
+                    sources["google"] = True
+                if gr.get("website") and not result.get("website"):
+                    result["website"] = gr["website"]
+                if gr.get("address") and not result.get("address"):
+                    result["address"] = gr["address"]
+                if gr.get("business_phone") and not result.get("business_phone"):
+                    result["business_phone"] = gr["business_phone"]
+            except Exception as e:
+                _elog.warning("[enrich] Google Maps error for %s: %s", name, e)
+        else:
+            sources["google"] = True
+
+        url = result.get("website", "")
+
+        # 2. Sunbiz — try multiple name variants
         try:
             sb = sunbiz_lookup(name)
             if sb.get("found"):
-                result["entity_name"]       = sb.get("entity_name", "")
-                result["formation_date"]    = sb.get("date_filed", "")
-                result["years_in_business"] = sb.get("years_in_business", "")
-                result["sunbiz_status"]     = sb.get("sunbiz_status", "")
-                result["sunbiz_url"]        = sb.get("sunbiz_url", "")
-                result["registered_agent"]  = sb.get("registered_agent", "")
-                result["reg_agent_address"] = sb.get("reg_agent_address", "")
+                sources["sunbiz"] = True
+                result["entity_name"]       = sb.get("entity_name", "") or result.get("entity_name", "")
+                result["formation_date"]    = sb.get("date_filed", "") or result.get("formation_date", "")
+                result["years_in_business"] = sb.get("years_in_business", "") or result.get("years_in_business", "")
+                result["sunbiz_status"]     = sb.get("sunbiz_status", "") or result.get("sunbiz_status", "")
+                result["sunbiz_url"]        = sb.get("sunbiz_url", "") or result.get("sunbiz_url", "")
+                result["registered_agent"]  = sb.get("registered_agent", "") or result.get("registered_agent", "")
+                result["reg_agent_address"] = sb.get("reg_agent_address", "") or result.get("reg_agent_address", "")
                 if sb.get("owner_name") and not result.get("owner_name"):
                     result["owner_name"] = sb.get("owner_name", "")
             else:
-                _elog.warning("[enrich] Sunbiz not found for: %s", name)
+                _elog.warning("[enrich] Sunbiz no match for %r (tried %s)", name, sb.get("tried"))
         except Exception as e:
             _elog.warning("[enrich] Sunbiz error for %s: %s", name, e)
 
-        # 2. Website scrape — general email, Instagram, Facebook
+        # 3. Website scrape — general email, Instagram, Facebook, phone
         if url:
             try:
                 ws = scrape_website_contact(url)
                 if ws.get("general_email"):
                     result["general_email"] = ws["general_email"]
+                    sources["website"] = True
                 if ws.get("instagram_url"):
                     result["instagram_url"] = ws["instagram_url"]
+                    sources["website"] = True
                 if ws.get("facebook_url") and not result.get("facebook_url"):
                     result["facebook_url"] = ws["facebook_url"]
+                    sources["website"] = True
                 if not result.get("business_phone") and ws.get("phones"):
                     result["business_phone"] = ws["phones"][0]
+                    sources["website"] = True
             except Exception as e:
                 _elog.warning("[enrich] Website scrape error for %s: %s", name, e)
 
-        # 2b. Hunter.io — fill general_email if still blank
+        # 3b. Hunter.io — fill general_email if still blank
         if url and not result.get("general_email"):
             try:
                 hunter_email = _hunter_domain_search(url)
@@ -2604,18 +2778,46 @@ def enrich_leads_batch(leads=None):
             except Exception as e:
                 _elog.warning("[enrich] Hunter error for %s: %s", name, e)
 
-        # 3. Google Maps reviews — rating + count
-        if not (result.get("google_rating") and result.get("google_review_count")):
+        # 3c. Apollo organization fallback — if we still have no website, try Apollo
+        if not result.get("website"):
             try:
-                gr = get_google_reviews(name, city, state)
-                if gr.get("google_rating"):
-                    result["google_rating"] = gr["google_rating"]
-                if gr.get("google_review_count"):
-                    result["google_review_count"] = gr["google_review_count"]
-                if not gr.get("google_rating"):
-                    _elog.warning("[enrich] No Google rating found for: %s", name)
+                apollo_key = os.environ.get("APOLLO_API_KEY", "").strip()
+                if apollo_key:
+                    loc_terms = [t for t in [city, state] if t]
+                    apollo_res = apollo_search_people(
+                        keywords=name,
+                        locations=loc_terms or None,
+                        num_results=3,
+                        _apollo_key=apollo_key,
+                    )
+                    orgs = (apollo_res or {}).get("organizations") or []
+                    for org in orgs:
+                        org_name = (org.get("name") or "").lower()
+                        if not org_name:
+                            continue
+                        if name.lower().split()[0] in org_name or org_name.split()[0] in name.lower():
+                            site = (org.get("website_url") or org.get("primary_domain") or "").strip()
+                            if site:
+                                if not site.startswith("http"):
+                                    site = "https://" + site
+                                result["website"] = site.rstrip("/")
+                                sources["apollo"] = True
+                            break
             except Exception as e:
-                _elog.warning("[enrich] Google reviews error for %s: %s", name, e)
+                _elog.warning("[enrich] Apollo lookup error for %s: %s", name, e)
+
+        # If Apollo gave us a website, scrape it now for email/social
+        if sources["apollo"] and result.get("website") and not result.get("general_email"):
+            try:
+                ws = scrape_website_contact(result["website"])
+                if ws.get("general_email"):
+                    result["general_email"] = ws["general_email"]
+                if ws.get("instagram_url") and not result.get("instagram_url"):
+                    result["instagram_url"] = ws["instagram_url"]
+                if ws.get("facebook_url") and not result.get("facebook_url"):
+                    result["facebook_url"] = ws["facebook_url"]
+            except Exception as e:
+                _elog.warning("[enrich] Apollo website scrape error for %s: %s", name, e)
 
         # 4. Owner contact — email + cell phone via web search
         owner = result.get("owner_name", "")
@@ -2648,21 +2850,21 @@ def enrich_leads_batch(leads=None):
 
         return result
 
-    # Run enrichment in parallel (3 workers to avoid overloading browsers)
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         futures = {executor.submit(_enrich_one, lead): i for i, lead in enumerate(leads)}
         for future in concurrent.futures.as_completed(futures):
             try:
                 enriched.append(future.result())
-            except Exception:
-                pass
+            except Exception as e:
+                _elog.warning("[enrich] worker failed: %s", e)
 
-    # Sort back to original order by trade_name
     enriched.sort(key=lambda x: x.get("trade_name", ""))
 
-    # Keep all leads regardless of Sunbiz status — inactive flag shown in UI
+    sunbiz_hits  = sum(1 for l in enriched if l.get("sunbiz_url") or l.get("entity_name"))
+    google_hits  = sum(1 for l in enriched if l.get("google_rating") or l.get("google_review_count"))
+    website_hits = sum(1 for l in enriched if l.get("website"))
+    email_hits   = sum(1 for l in enriched if l.get("general_email") and "@" in l.get("general_email", ""))
 
-    # Save to CSV
     _leads_store = enriched
     _save_leads_to_file(enriched)
 
@@ -2670,6 +2872,13 @@ def enrich_leads_batch(leads=None):
         "leads": enriched,
         "total": len(enriched),
         "saved": True,
+        "summary": {
+            "sunbiz_matched":  sunbiz_hits,
+            "google_matched":  google_hits,
+            "websites_found":  website_hits,
+            "emails_found":    email_hits,
+            "out_of":          len(enriched),
+        },
     }
 
 
@@ -2747,6 +2956,8 @@ When asked to draft emails, call `save_outreach_csv` with personalized copy. Sig
 - Keep replies short (1–2 sentences) after tool runs unless the user asked for a detailed report — then summarize findings clearly without dumping raw JSON.
 - Do not use `web_search` unless the user explicitly asks.
 - No markdown tables in chat — the UI shows tables when tools return leads.
+- After `enrich_leads_batch`, ALWAYS report the per-source counts from the tool's `summary` object (e.g. "Sunbiz matched 4/5, Google Maps matched 5/5, websites 3/5"). NEVER claim "no Sunbiz, website, or Google data found" if any of those counts is greater than zero. If a count is zero for a category, say only that category was missing — don't generalize.
+- If `enrich_leads_batch` returns 0 for a category but the user knows the data exists, suggest re-running enrichment (Sunbiz can rate-limit) before claiming the source has nothing.
 """
 
 
