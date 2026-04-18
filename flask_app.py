@@ -487,10 +487,11 @@ def query_tenant_crm(query="", sheet_name=None, limit=50):
             cols = [d[0] for d in con.description]
 
         rows = [dict(zip(cols, r)) for r in result]
+        leads = [_normalize_db_lead_row(r) for r in rows]
         log.info("[CRM] query returned %d rows for query=%r", len(rows), query)
         return {
             "rows":    rows,
-            "leads":   rows,
+            "leads":   leads,
             "count":   len(rows),
             "sheet":       _tenant_crm_duck.get("sheet"),
             "source_xlsx": path,
@@ -508,6 +509,80 @@ def query_tenant_crm(query="", sheet_name=None, limit=50):
 
 _PG_TABLE   = "leads_db"
 _pg_loaded  = False   # True once data has been inserted into Postgres this process
+
+
+def _lead_row_get(row: dict, *keys, default=""):
+    """Fetch first non-empty value among possible key names."""
+    for k in keys:
+        v = row.get(k)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return default
+
+
+def _extract_city_state(address: str):
+    """
+    Extract city/state from address patterns like:
+    '123 MAIN ST, MIAMI, FL 33101'
+    """
+    if not address:
+        return "", ""
+    parts = [p.strip() for p in str(address).split(",") if p.strip()]
+    if len(parts) < 2:
+        return "", ""
+    city = parts[-2] if len(parts) >= 2 else ""
+    state = ""
+    tail = parts[-1].split()
+    if tail:
+        state = tail[0]
+    return city, state
+
+
+def _normalize_db_lead_row(row: dict):
+    """
+    Map DB-native business columns to the lead schema expected by the UI table.
+    Keeps a minimal subset required for display and downstream actions.
+    """
+    address = _lead_row_get(row, "address", "Address", "business_address", "Business_Address")
+    city = _lead_row_get(row, "city", "City")
+    state = _lead_row_get(row, "state", "State")
+    if not city and not state:
+        city_guess, state_guess = _extract_city_state(address)
+        city = city or city_guess
+        state = state or state_guess
+
+    trade_name = _lead_row_get(
+        row, "trade_name", "Trade_Name",
+        "business_name", "Business_Name",
+        "company", "Company",
+        "entity_name", "Entity_Name",
+    )
+    entity_name = _lead_row_get(
+        row, "entity_name", "Entity_Name",
+        "business_name", "Business_Name",
+        "trade_name", "Trade_Name",
+    )
+
+    return {
+        # Identity
+        "trade_name": trade_name,
+        "entity_name": entity_name,
+        "industry": _lead_row_get(row, "industry", "Industry", "use_category", "Use_Category"),
+        # Contact / location
+        "business_phone": _lead_row_get(row, "business_phone", "Business_Phone", "phone", "Phone"),
+        "general_email": _lead_row_get(row, "general_email", "General_Email", "business_email", "Business_Email", "email", "Email"),
+        "address": address,
+        "city": city,
+        "state": state,
+        "website": _lead_row_get(row, "website", "Website", "business_website", "Business_Website"),
+        # Social / review fields used by UI (best-effort mappings)
+        "instagram_url": _lead_row_get(row, "instagram_url", "Instagram_URL", "instagram_handle", "Instagram_Handle"),
+        "facebook_url": _lead_row_get(row, "facebook_url", "Facebook_URL", "facebook_handle", "Facebook_Handle"),
+        "google_rating": _lead_row_get(row, "google_rating", "Google_Rating"),
+        "google_review_count": _lead_row_get(row, "google_review_count", "Google_Review_Count"),
+        # Keep source marker for debugging/filtering
+        "sheet": _lead_row_get(row, "sheet", "Sheet"),
+    }
 
 
 def _pg_database_url():
@@ -701,11 +776,12 @@ def _query_pg(query="", limit=50):
             cur.execute(f'SELECT {cols_sql} FROM "{_PG_TABLE}" WHERE {conds} LIMIT %s', params)
 
         rows = [dict(zip(col_names, r)) for r in cur.fetchall()]
+        leads = [_normalize_db_lead_row(r) for r in rows]
         cur.close(); con.close()
         log.info("[PG] query returned %d rows for query=%r", len(rows), query)
         return {
             "rows":    rows,
-            "leads":   rows,
+            "leads":   leads,
             "count":   len(rows),
             "engine":  "postgres",
             "table":   _PG_TABLE,
