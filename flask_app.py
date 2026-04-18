@@ -12,30 +12,88 @@ from urllib.parse import quote_plus, urljoin, urlparse
 # Load .env so keys work locally without pasting them in the UI every time.
 # 1) Walk upward from this file until a .env is found (covers nested layouts)
 # 2) Current working directory — fills any vars still missing
-try:
-    from dotenv import load_dotenv
+# 3) If python-dotenv is missing, parse .env manually (utf-8-sig strips BOM)
 
+_DOTENV_LOADED_PATH = None
+
+
+def _manual_load_env_file(path: str):
+    """Parse KEY=VALUE lines into os.environ (no python-dotenv required)."""
+    if not path or not os.path.isfile(path):
+        return
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k:
+                    os.environ[k] = v
+    except OSError:
+        pass
+
+
+def _load_env_files():
+    global _DOTENV_LOADED_PATH
     _start_dir = os.path.dirname(os.path.abspath(__file__))
-    _env_loaded_path = None
+    _env_project = None
     _cur = _start_dir
     for _ in range(10):
         _candidate = os.path.join(_cur, ".env")
         if os.path.isfile(_candidate):
-            load_dotenv(_candidate, override=True)
-            _env_loaded_path = _candidate
+            _env_project = _candidate
             break
         _parent = os.path.dirname(_cur)
         if _parent == _cur:
             break
         _cur = _parent
     _env_cwd = os.path.join(os.getcwd(), ".env")
-    if os.path.isfile(_env_cwd) and (
-        not _env_loaded_path
-        or os.path.normpath(_env_cwd) != os.path.normpath(_env_loaded_path)
+
+    def _load(path: str, override: bool):
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv(path, override=override)
+        except ImportError:
+            if override:
+                _manual_load_env_file(path)
+            else:
+                # merge: only set keys not already present
+                try:
+                    with open(path, encoding="utf-8-sig") as f:
+                        for raw in f:
+                            line = raw.strip()
+                            if not line or line.startswith("#") or "=" not in line:
+                                continue
+                            k, v = line.split("=", 1)
+                            k = k.strip()
+                            if k and k not in os.environ:
+                                v = v.strip().strip('"').strip("'")
+                                os.environ[k] = v
+                except OSError:
+                    pass
+
+    # Prefer project .env, then fill from cwd without overriding
+    if _env_project:
+        _load(_env_project, override=True)
+        _DOTENV_LOADED_PATH = os.path.abspath(_env_project)
+    if _env_cwd and os.path.isfile(_env_cwd) and (
+        not _env_project
+        or os.path.normpath(_env_cwd) != os.path.normpath(_env_project)
     ):
-        load_dotenv(_env_cwd, override=False)
-except ImportError:
-    pass
+        _load(_env_cwd, override=bool(not _env_project))
+        if not _DOTENV_LOADED_PATH:
+            _DOTENV_LOADED_PATH = os.path.abspath(_env_cwd)
+
+
+_load_env_files()
 
 import requests
 from flask import Flask, request, session, Response, send_file, jsonify, render_template, redirect
@@ -2977,6 +3035,11 @@ def get_config():
     _gmail_addr, _gmail_pw = _get_gmail_creds()
     gmail_connected = bool(_gmail_addr and _gmail_pw)
     crm_path = (session.get("crm_path") or "").strip() or (os.getenv("TENANT_CRM_XLSX_PATH") or "").strip()
+    try:
+        import dotenv as _dotenv_mod  # noqa: F401
+        _dotenv_ok = True
+    except ImportError:
+        _dotenv_ok = False
     return jsonify({
         "anthropic":      bool(_env_or_session("anthropic_key", "ANTHROPIC_API_KEY")),
         "apollo":         bool(_env_or_session("apollo_key", "APOLLO_API_KEY")),
@@ -2989,6 +3052,11 @@ def get_config():
         "claude_model":     session.get("claude_model",     "claude-opus-4-6"),
         "gemini_model":     session.get("gemini_model",     "gemini-3-flash-preview"),
         "perplexity_model": session.get("perplexity_model", "sonar-pro"),
+        # Local debugging: why keys are missing (no secret values)
+        "env_file_loaded": bool(_DOTENV_LOADED_PATH),
+        "env_file_path":   _DOTENV_LOADED_PATH or "",
+        "python_dotenv_installed": _dotenv_ok,
+        "flask_app_dir":   os.path.dirname(os.path.abspath(__file__)),
     })
 
 
