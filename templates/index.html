@@ -108,7 +108,7 @@
         </div>
 
         <div class="p-4 border-t border-gray-800 flex items-center cursor-pointer hover:bg-gray-800 transition-colors" onclick="toggleSettings()">
-            <div class="bg-teal-900 text-teal-400 rounded-full h-8 w-8 flex items-center justify-center font-bold text-xs mr-3">JD</div>
+            <div class="bg-teal-900 text-teal-400 rounded-full h-8 w-8 flex items-center justify-center font-bold text-xs mr-3">GN</div>
             <div class="flex-1">
                 <p class="text-white text-sm font-medium">Gabriel Navarro</p>
                 <p class="text-xs">Broker</p>
@@ -338,12 +338,16 @@
 
         <!-- SETTINGS MODAL (scroll body; Save/Cancel stay visible at bottom) -->
         <div id="settings-modal" class="hidden fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
-            <div class="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[min(90vh,720px)] flex flex-col overflow-hidden">
-                <div class="flex items-center justify-between px-8 pt-8 pb-4 flex-shrink-0 border-b border-gray-100">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[min(90vh,720px)] flex flex-col min-h-0 overflow-hidden">
+                <div class="flex items-center justify-between gap-3 px-6 pt-6 pb-3 flex-shrink-0 border-b border-gray-100">
                     <h2 class="font-semibold text-gray-900 text-lg">API Configuration</h2>
-                    <button type="button" onclick="toggleSettings()" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+                    <div class="flex items-center gap-2 flex-shrink-0">
+                        <button type="button" onclick="saveConfig()" class="bg-teal-500 hover:bg-teal-400 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm">Save</button>
+                        <button type="button" onclick="toggleSettings()" class="text-gray-400 hover:text-gray-600 text-xl leading-none px-1" aria-label="Close">&times;</button>
+                    </div>
                 </div>
-                <div class="flex-1 overflow-y-auto overscroll-contain px-8 py-4 space-y-4">
+                <!-- min-h-0 is required: without it, flex-1 children grow and push the footer off-screen -->
+                <div class="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 py-4 space-y-4">
 
                     <!-- AI Model Provider -->
                     <div class="bg-gray-50 rounded-xl p-4 space-y-3">
@@ -460,8 +464,8 @@
                         </div>
                     </div>
                 </div>
-                <div id="config-msg" class="hidden px-8 pb-2 text-sm text-teal-600 font-medium flex-shrink-0"></div>
-                <div class="flex gap-3 px-8 py-4 flex-shrink-0 border-t border-gray-100 bg-gray-50/80">
+                <div id="config-msg" class="hidden px-6 pb-1 text-sm text-teal-600 font-medium flex-shrink-0"></div>
+                <div class="flex gap-3 px-6 py-3 flex-shrink-0 border-t border-gray-100 bg-gray-50/80">
                     <button type="button" onclick="saveConfig()" class="flex-1 bg-teal-500 hover:bg-teal-400 text-white font-medium py-2.5 rounded-lg text-sm transition-colors shadow-sm">Save settings</button>
                     <button type="button" onclick="toggleSettings()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-600 font-medium py-2.5 rounded-lg text-sm transition-colors">Cancel</button>
                 </div>
