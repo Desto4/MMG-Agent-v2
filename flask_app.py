@@ -416,7 +416,171 @@ def _tenant_crm_get_connection(path, sheet_name=None):
     return _tenant_crm_duck["con"]
 
 
-def query_tenant_crm(query="", sheet_name=None, limit=50):
+_CRM_DEFAULT_LIMIT = 50
+_CRM_MAX_LIMIT = 5000
+_last_user_message = ""
+
+
+def _normalize_crm_limit(limit, all_results=False):
+    """Normalize CRM limit; supports 'all' via all_results or non-positive limits."""
+    if all_results:
+        return _CRM_MAX_LIMIT
+    try:
+        n = int(_CRM_DEFAULT_LIMIT if limit is None else limit)
+    except Exception:
+        n = _CRM_DEFAULT_LIMIT
+    if n <= 0:
+        return _CRM_MAX_LIMIT
+    return max(1, min(n, _CRM_MAX_LIMIT))
+
+
+_CRM_ALL_WORDS_RE = re.compile(r"\b(all|every|everything|entire|full|complete)\b", re.I)
+
+
+def _wants_all_results(text: str) -> bool:
+    """Heuristic: treat prompts with 'all/every/entire/complete' as full-result queries."""
+    if not text:
+        return False
+    return bool(_CRM_ALL_WORDS_RE.search(text))
+
+
+def _strip_all_words(text: str) -> str:
+    """Remove quantity words like 'all/full/complete' from search text."""
+    if not text:
+        return ""
+    return re.sub(_CRM_ALL_WORDS_RE, " ", text).strip()
+
+
+def _canonical_query_text(text: str) -> str:
+    """Lowercase, remove punctuation, singularize simple plurals, collapse spaces."""
+    if not text:
+        return ""
+    t = re.sub(r"[^\w\s]", " ", text.lower())
+    words = []
+    for w in t.split():
+        # Basic singularization for common plural user terms (salons->salon, barbers->barber)
+        if len(w) > 3 and w.endswith("s"):
+            w = w[:-1]
+        words.append(w)
+    return " ".join(words)
+
+
+def _extract_structured_filters(text: str):
+    """
+    Infer structured filters from the natural-language query to avoid
+    over-restrictive free-text matching.
+    Returns dict with optional keys: county, category.
+    """
+    t = _canonical_query_text(text)
+    county = ""
+    if "miami dade" in t or "miamidade" in t:
+        county = "miami-dade"
+    elif "broward" in t:
+        county = "broward"
+
+    category = ""
+    if "nail salon" in t or "nail" in t:
+        category = "nail salon"
+    elif "hair salon" in t or ("hair" in t and "salon" in t):
+        category = "hair salon"
+    elif "barber" in t or "barbershop" in t:
+        category = "barbers"
+
+    return {"county": county, "category": category}
+
+
+def _normalize_query_tokens(text: str):
+    """Lowercase + simple singularization + drop filler words."""
+    if not text:
+        return []
+    stop = {
+        "show", "me", "find", "get", "list", "pull", "in", "from", "the",
+        "a", "an", "for", "and", "or", "of", "some", "please", "i", "want",
+        "county", "counties", "database", "db", "result", "results",
+    }
+    raw = re.sub(r"[^\w\s]", " ", text.lower()).split()
+    out = []
+    for w in raw:
+        if w in stop:
+            continue
+        # naive singularization helps salon/salons, barber/barbers, etc.
+        if len(w) > 4 and w.endswith("s"):
+            w = w[:-1]
+        out.append(w)
+    return out
+
+
+def _query_structured_hints(query: str):
+    """
+    Parse common structured hints from natural language for higher recall:
+    - county/city tags via sheet filtering
+    - industry tags via sheet filtering
+    Returns (sheet_terms, keyword_terms).
+    """
+    toks = _normalize_query_tokens(query)
+    tset = set(toks)
+
+    county_terms = []
+    if "miami" in tset or "dade" in tset or "miamidade" in tset:
+        county_terms.append("miami-dade")
+    if "broward" in tset:
+        county_terms.append("broward")
+
+    industry_terms = []
+    if "nail" in tset:
+        industry_terms.append("nail salon")
+    if "hair" in tset:
+        industry_terms.append("hair salon")
+    if "barber" in tset or "barbershop" in tset:
+        industry_terms.append("barber")
+
+    sheet_terms = county_terms + industry_terms
+    # remove explicitly structured hints from generic keyword matching
+    structured = {"miami", "dade", "miamidade", "broward", "nail", "hair", "barber", "barbershop", "salon"}
+    keyword_terms = [w for w in toks if w not in structured]
+    return sheet_terms, keyword_terms
+
+
+def _crm_structured_filters(query: str):
+    """
+    Parse structured filters from natural language query.
+    Returns (county_like, industry_like, remaining_words).
+    """
+    low = (query or "").lower()
+    county = ""
+    if "miami-dade" in low or "miami dade" in low:
+        county = "miami-dade"
+    elif "broward" in low:
+        county = "broward"
+
+    industry = ""
+    if "nail" in low:
+        industry = "nail salon"
+    elif "barber" in low:
+        industry = "barber"
+    elif "hair" in low and ("salon" in low or "salons" in low):
+        industry = "hair salon"
+
+    tokens = re.findall(r"\w+", low)
+    stop = {
+        "all", "every", "everything", "entire", "full", "complete",
+        "list", "results", "result", "rows", "records", "record", "entries", "entry",
+        "show", "me", "find", "get", "give", "pull", "please",
+        "in", "of", "for", "from", "the", "a", "an", "to",
+        "miami", "dade", "broward", "county",
+    }
+    if industry == "nail salon":
+        stop.update({"nail", "salon", "salons"})
+    elif industry == "barber":
+        stop.update({"barber", "barbers", "barbershop", "barbershops"})
+    elif industry == "hair salon":
+        stop.update({"hair", "salon", "salons"})
+
+    words = [t for t in tokens if t not in stop]
+    return county, industry, words
+
+
+def query_tenant_crm(query="", sheet_name=None, limit=50, all_results=False):
     """
     Query the MMG business leads database.
     Routes to Postgres when DATABASE_URL is set (Render), otherwise local DuckDB.
@@ -427,7 +591,7 @@ def query_tenant_crm(query="", sheet_name=None, limit=50):
     # Prefer Postgres when DATABASE_URL is available
     if _pg_database_url():
         log.info("[CRM] routing to Postgres: query=%r", query)
-        return _query_pg(query=query, limit=limit)
+        return _query_pg(query=query, limit=limit, all_results=all_results)
 
     path = _leads_db_xlsx_path()
     log.info("[CRM] query_tenant_crm called: query=%r path=%r", query, path)
@@ -444,7 +608,9 @@ def query_tenant_crm(query="", sheet_name=None, limit=50):
         log.warning("[CRM] Excel file not found: %s", path)
         return {"error": f"Business leads database file not found: {path}", "rows": []}
 
-    limit = max(1, min(int(limit or 50), 200))
+    if _wants_all_results(f" {query} "):
+        all_results = True
+    limit = _normalize_crm_limit(limit, all_results=all_results)
     tbl = _tenant_crm_duck["table"]
 
     try:
@@ -471,23 +637,39 @@ def query_tenant_crm(query="", sheet_name=None, limit=50):
     hay = "lower(concat_ws(' ', " + ", ".join(f"nullif({ident}, '')" for ident in idents) + "))"
 
     q = (query or "").strip()
-    words = [w for w in q.lower().split() if w]
+    if _wants_all_results(f" {q} "):
+        all_results = True
+    q = _strip_all_words(q)
+    sheet_terms, keywords = _query_structured_hints(q)
+    words = [w for w in keywords if w]
 
     try:
-        if not words:
-            sql = f"SELECT {quoted_cols} FROM {tbl} LIMIT ?"
-            result = con.execute(sql, [limit]).fetchall()
+        where_parts = []
+        params = []
+        if sheet_terms:
+            sheet_ident = '"sheet"'
+            if sheet_ident in idents:
+                for st in sheet_terms:
+                    where_parts.append(f"lower({sheet_ident}) LIKE ?")
+                    params.append(f"%{st}%")
+        for w in words:
+            where_parts.append(f"{hay} LIKE ?")
+            params.append(f"%{w}%")
+
+        if where_parts:
+            where = " AND ".join(where_parts)
+            sql = f"SELECT {quoted_cols} FROM {tbl} WHERE {where} LIMIT ?"
+            result = con.execute(sql, params + [limit]).fetchall()
             cols = [d[0] for d in con.description]
         else:
-            conds = [f"{hay} LIKE ?" for _ in words]
-            where = " AND ".join(conds)
-            params = [f"%{w}%" for w in words] + [limit]
-            sql = f"SELECT {quoted_cols} FROM {tbl} WHERE {where} LIMIT ?"
-            result = con.execute(sql, params).fetchall()
+            sql = f"SELECT {quoted_cols} FROM {tbl} LIMIT ?"
+            result = con.execute(sql, [limit]).fetchall()
             cols = [d[0] for d in con.description]
 
         rows = [dict(zip(cols, r)) for r in result]
         leads = [_normalize_db_lead_row(r) for r in rows]
+        global _leads_store
+        _leads_store = leads
         log.info("[CRM] query returned %d rows for query=%r", len(rows), query)
         return {
             "rows":    rows,
@@ -738,7 +920,7 @@ def _pg_ensure_loaded(xlsx_path):
     return col_names
 
 
-def _query_pg(query="", limit=50):
+def _query_pg(query="", limit=50, all_results=False):
     """Query the Postgres leads_db table. Returns same shape as DuckDB path."""
     import logging
     log = logging.getLogger(__name__)
@@ -764,8 +946,11 @@ def _query_pg(query="", limit=50):
     hay = " || ' ' || ".join(f'COALESCE("{c}", \'\')' for c in col_names)
 
     q = (query or "").strip()
+    if _wants_all_results(f" {q} "):
+        all_results = True
+    q = _strip_all_words(q)
     words = [w for w in q.lower().split() if w]
-    limit = max(1, min(int(limit or 50), 200))
+    limit = _normalize_crm_limit(limit, all_results=all_results)
 
     try:
         if not words:
@@ -777,6 +962,8 @@ def _query_pg(query="", limit=50):
 
         rows = [dict(zip(col_names, r)) for r in cur.fetchall()]
         leads = [_normalize_db_lead_row(r) for r in rows]
+        global _leads_store
+        _leads_store = leads
         cur.close(); con.close()
         log.info("[PG] query returned %d rows for query=%r", len(rows), query)
         return {
@@ -996,8 +1183,13 @@ TOOLS = [
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Max rows to return (default 50, max 200)",
+                    "description": "Rows to return (default 50). Set all_results=true or limit<=0 for all matches.",
                     "default": 50,
+                },
+                "all_results": {
+                    "type": "boolean",
+                    "description": "If true, return all matching rows (up to system max).",
+                    "default": False,
                 },
             },
             "required": [],
@@ -2656,7 +2848,8 @@ def _auto_crm_prefix(user_message: str) -> str:
     words = [w for w in re.sub(r"[^\w\s]", " ", low).split() if w not in stop]
     query = " ".join(words[:6])  # max 6 keywords
     try:
-        result = query_tenant_crm(query=query, limit=50)
+        wants_all = _wants_all_results(low)
+        result = query_tenant_crm(query=query, limit=(_CRM_MAX_LIMIT if wants_all else 50), all_results=wants_all)
         if result.get("error") or not result.get("rows"):
             return ""
         rows = result["rows"]
