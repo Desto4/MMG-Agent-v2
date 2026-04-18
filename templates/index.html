@@ -187,30 +187,67 @@
                     <span class="text-sm font-medium text-teal-600">Live</span>
                 </div>
             </header>
-            <div id="chat-messages" class="flex-1 overflow-y-auto p-8 pb-32">
-                <div class="max-w-4xl mx-auto space-y-6" id="messages-container"></div>
+            <!-- Chat messages (hidden when empty, shown after first message) -->
+            <div id="chat-messages" class="flex-1 overflow-y-auto px-8 pt-6 pb-36 hidden">
+                <div class="max-w-3xl mx-auto space-y-6" id="messages-container"></div>
             </div>
+
+            <!-- Empty / hero state (shown until first message) -->
+            <div id="chat-empty-state" class="flex-1 flex flex-col items-center justify-center px-8 pb-48">
+                <!-- Logo mark -->
+                <div class="w-12 h-12 rounded-xl bg-gray-900 flex items-center justify-center mb-6 shadow-sm">
+                    <i class="fa-solid fa-building text-white text-lg"></i>
+                </div>
+                <!-- Headline -->
+                <h1 class="text-4xl font-bold text-gray-900 mb-3 text-center">Find your next tenant.</h1>
+                <p class="text-gray-400 text-base mb-10 text-center">Florida CRE tenant intelligence, on demand.</p>
+                <!-- Suggestion chips -->
+                <div class="flex flex-wrap gap-3 justify-center max-w-xl">
+                    <button onclick="submitSuggestion('Show me nail salons in Miami-Dade')"
+                        class="flex items-center gap-2 px-4 py-2 rounded-full border border-gray-200 bg-white text-sm text-gray-600 hover:border-teal-400 hover:text-teal-600 hover:bg-teal-50 transition-all shadow-sm">
+                        <i class="fa-solid fa-scissors text-teal-500 text-xs"></i>
+                        Nail salons — Miami-Dade
+                    </button>
+                    <button onclick="submitSuggestion('Show me hair salons in Broward')"
+                        class="flex items-center gap-2 px-4 py-2 rounded-full border border-gray-200 bg-white text-sm text-gray-600 hover:border-teal-400 hover:text-teal-600 hover:bg-teal-50 transition-all shadow-sm">
+                        <i class="fa-solid fa-star text-teal-500 text-xs"></i>
+                        Hair salons — Broward
+                    </button>
+                    <button onclick="submitSuggestion('Show me barbers in Miami-Dade')"
+                        class="flex items-center gap-2 px-4 py-2 rounded-full border border-gray-200 bg-white text-sm text-gray-600 hover:border-teal-400 hover:text-teal-600 hover:bg-teal-50 transition-all shadow-sm">
+                        <i class="fa-solid fa-user text-teal-500 text-xs"></i>
+                        Barbers — Miami-Dade
+                    </button>
+                    <button onclick="submitSuggestion('Show me barbers in Broward')"
+                        class="flex items-center gap-2 px-4 py-2 rounded-full border border-gray-200 bg-white text-sm text-gray-600 hover:border-teal-400 hover:text-teal-600 hover:bg-teal-50 transition-all shadow-sm">
+                        <i class="fa-solid fa-map-location-dot text-teal-500 text-xs"></i>
+                        Barbers — Broward
+                    </button>
+                </div>
+            </div>
+
             <!-- Floating input bar -->
             <div class="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-10 pb-6 px-8 z-20">
-                <div class="max-w-4xl mx-auto">
-                    <p id="gabe-prompt" class="text-center text-lg font-semibold text-gray-600 mb-3">Hey Gabe, what kind of businesses are you looking for today?</p>
-                    <div class="relative">
+                <div class="max-w-3xl mx-auto">
+                    <div class="relative bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden focus-within:ring-2 focus-within:ring-teal-400 focus-within:border-transparent">
                         <input id="chat-input" type="text"
-                            placeholder="Ask me to find leads, load to HubSpot, draft emails…"
-                            class="w-full pl-6 pr-14 py-4 bg-white border border-gray-200 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-700 disabled:opacity-50"
+                            placeholder="Ask anything — find leads, enrich contacts, push to HubSpot…"
+                            class="w-full pl-6 pr-14 py-4 bg-transparent focus:outline-none text-gray-700 disabled:opacity-50 text-sm"
                             onkeydown="if(event.key==='Enter') sendMessage()">
                         <!-- Send button (shown when idle) -->
                         <button id="send-btn" onclick="sendMessage()"
-                            class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-gray-100 hover:bg-gray-200 text-gray-500 p-2 rounded-lg transition-colors disabled:opacity-40">
-                            <i class="fa-solid fa-arrow-up"></i>
+                            class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-gray-900 hover:bg-gray-700 text-white p-2 rounded-xl transition-colors">
+                            <i class="fa-solid fa-arrow-up text-sm"></i>
                         </button>
                         <!-- Stop button (shown while streaming) -->
                         <button id="stop-btn" onclick="stopStreaming()"
-                            class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-red-100 hover:bg-red-200 text-red-600 p-2 rounded-lg transition-colors hidden"
+                            class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-red-100 hover:bg-red-200 text-red-600 p-2 rounded-xl transition-colors hidden"
                             title="Stop generation">
-                            <i class="fa-solid fa-stop"></i>
+                            <i class="fa-solid fa-stop text-sm"></i>
                         </button>
                     </div>
+                    <!-- Sub-label -->
+                    <p class="text-center text-xs text-gray-300 mt-3">Local database · Florida business registry · Apollo · HubSpot</p>
                 </div>
             </div>
         </div>
@@ -536,9 +573,11 @@ function newTask() {
     document.getElementById('session-title').textContent = 'Agent Session';
     // Clear backend leads store so old leads don't carry over
     fetch('/api/clear_leads', { method: 'POST' }).catch(() => {});
-    // Show the prompt text again for the new task
-    const gabePrompt = document.getElementById('gabe-prompt');
-    if (gabePrompt) gabePrompt.classList.remove('hidden');
+    // Show empty/hero state again for the new task
+    const emptyState = document.getElementById('chat-empty-state');
+    const chatMessages = document.getElementById('chat-messages');
+    if (emptyState) emptyState.classList.remove('hidden');
+    if (chatMessages) chatMessages.classList.add('hidden');
     renderTasks();
     showPage('session');
     document.getElementById('chat-input').focus();
@@ -671,6 +710,12 @@ function appendToolChipStatic(name, done) {
 }
 
 // ── Chat send ──────────────────────────────────────────────────────────────
+function submitSuggestion(text) {
+    const input = document.getElementById('chat-input');
+    input.value = text;
+    sendMessage();
+}
+
 async function sendMessage(prefill) {
     if (isStreaming) return;
     const input = document.getElementById('chat-input');
@@ -689,9 +734,13 @@ async function sendMessage(prefill) {
         renderTasks();
     }
 
-    // Hide the prompt text after first message
-    const gabePrompt = document.getElementById('gabe-prompt');
-    if (gabePrompt) gabePrompt.classList.add('hidden');
+    // Hide empty/hero state and show chat messages on first send
+    const emptyState = document.getElementById('chat-empty-state');
+    const chatMessages = document.getElementById('chat-messages');
+    if (emptyState && !emptyState.classList.contains('hidden')) {
+        emptyState.classList.add('hidden');
+        chatMessages.classList.remove('hidden');
+    }
 
     appendUserBubble(message);
     if (task) task.messages.push({role: 'user', content: message});
