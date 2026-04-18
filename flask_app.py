@@ -10,16 +10,29 @@ from datetime import datetime
 from urllib.parse import quote_plus, urljoin, urlparse
 
 # Load .env so keys work locally without pasting them in the UI every time.
-# 1) Next to this file (project root) — preferred
-# 2) Current working directory — fills any vars still missing (e.g. you ran Flask from another folder)
+# 1) Walk upward from this file until a .env is found (covers nested layouts)
+# 2) Current working directory — fills any vars still missing
 try:
     from dotenv import load_dotenv
-    _app_dir = os.path.dirname(os.path.abspath(__file__))
-    _env_project = os.path.join(_app_dir, ".env")
-    if os.path.isfile(_env_project):
-        load_dotenv(_env_project, override=True)
+
+    _start_dir = os.path.dirname(os.path.abspath(__file__))
+    _env_loaded_path = None
+    _cur = _start_dir
+    for _ in range(10):
+        _candidate = os.path.join(_cur, ".env")
+        if os.path.isfile(_candidate):
+            load_dotenv(_candidate, override=True)
+            _env_loaded_path = _candidate
+            break
+        _parent = os.path.dirname(_cur)
+        if _parent == _cur:
+            break
+        _cur = _parent
     _env_cwd = os.path.join(os.getcwd(), ".env")
-    if os.path.isfile(_env_cwd) and os.path.normpath(_env_cwd) != os.path.normpath(_env_project):
+    if os.path.isfile(_env_cwd) and (
+        not _env_loaded_path
+        or os.path.normpath(_env_cwd) != os.path.normpath(_env_loaded_path)
+    ):
         load_dotenv(_env_cwd, override=False)
 except ImportError:
     pass
@@ -2948,17 +2961,28 @@ def index():
     return render_template("index.html")
 
 
+def _env_or_session(session_key: str, env_name: str) -> str:
+    """Prefer Flask session value, else environment (both stripped)."""
+    try:
+        s = (session.get(session_key) or "").strip()
+    except RuntimeError:
+        s = ""
+    if s:
+        return s
+    return (os.getenv(env_name) or "").strip()
+
+
 @app.route("/api/config", methods=["GET"])
 def get_config():
     _gmail_addr, _gmail_pw = _get_gmail_creds()
     gmail_connected = bool(_gmail_addr and _gmail_pw)
     crm_path = (session.get("crm_path") or "").strip() or (os.getenv("TENANT_CRM_XLSX_PATH") or "").strip()
     return jsonify({
-        "anthropic":      bool(session.get("anthropic_key")  or os.getenv("ANTHROPIC_API_KEY")),
-        "apollo":         bool(session.get("apollo_key")     or os.getenv("APOLLO_API_KEY")),
-        "hubspot":        bool(session.get("hubspot_token")  or os.getenv("HUBSPOT_TOKEN")),
-        "gemini":         bool(session.get("gemini_key")       or os.getenv("GEMINI_API_KEY")),
-        "perplexity":     bool(session.get("perplexity_key")   or os.getenv("PERPLEXITY_API_KEY")),
+        "anthropic":      bool(_env_or_session("anthropic_key", "ANTHROPIC_API_KEY")),
+        "apollo":         bool(_env_or_session("apollo_key", "APOLLO_API_KEY")),
+        "hubspot":        bool(_env_or_session("hubspot_token", "HUBSPOT_TOKEN")),
+        "gemini":         bool(_env_or_session("gemini_key", "GEMINI_API_KEY")),
+        "perplexity":     bool(_env_or_session("perplexity_key", "PERPLEXITY_API_KEY")),
         "gmail":          gmail_connected,
         "crm":            bool(crm_path) and os.path.isfile(crm_path),
         "model_provider":   session.get("model_provider",   "anthropic"),
