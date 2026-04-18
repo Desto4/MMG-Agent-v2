@@ -818,7 +818,7 @@ async function sendMessage(prefill) {
                     }
 
                     // Render table after enrichment, Apollo, or get_collected_leads
-                    const leadsResult = ['apollo_search_people','enrich_leads_batch','get_collected_leads']
+                    const leadsResult = ['apollo_search_people','enrich_leads_batch','get_collected_leads','query_tenant_crm']
                         .includes(evt.name) && evt.result?.leads?.length ? evt.result.leads : null;
                     if (leadsResult) {
                         const tableDiv = document.createElement('div');

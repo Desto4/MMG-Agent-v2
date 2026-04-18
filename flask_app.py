@@ -489,8 +489,9 @@ def query_tenant_crm(query="", sheet_name=None, limit=50):
         rows = [dict(zip(cols, r)) for r in result]
         log.info("[CRM] query returned %d rows for query=%r", len(rows), query)
         return {
-            "rows":        rows,
-            "count":       len(rows),
+            "rows":    rows,
+            "leads":   rows,
+            "count":   len(rows),
             "sheet":       _tenant_crm_duck.get("sheet"),
             "source_xlsx": path,
             "db_file":     _tenant_crm_duck.get("db_path"),
@@ -704,6 +705,7 @@ def _query_pg(query="", limit=50):
         log.info("[PG] query returned %d rows for query=%r", len(rows), query)
         return {
             "rows":    rows,
+            "leads":   rows,
             "count":   len(rows),
             "engine":  "postgres",
             "table":   _PG_TABLE,
