@@ -7,7 +7,7 @@ import base64
 import email as email_lib
 import email.mime.text
 from datetime import datetime
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import parse_qsl, quote_plus, urlencode, urljoin, urlparse, urlunparse
 
 # Load .env file if present (so keys don't need to be entered in the UI)
 try:
@@ -16,6 +16,32 @@ try:
     load_dotenv(_env_path, override=True)
 except ImportError:
     pass
+
+
+def _ensure_postgres_sslmode_require(database_url: str) -> str:
+    """Ensure PostgreSQL connection URLs require SSL (sslmode=require)."""
+    if not database_url or not str(database_url).strip():
+        return database_url
+    raw = str(database_url).strip()
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return database_url
+    base_scheme = parsed.scheme.split("+", 1)[0]
+    if base_scheme not in ("postgres", "postgresql"):
+        return database_url
+    q = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    q["sslmode"] = "require"
+    new_query = urlencode(q)
+    return urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment)
+    )
+
+
+for _db_env_key in ("DATABASE_URL", "SQLALCHEMY_DATABASE_URI"):
+    _db_url = os.environ.get(_db_env_key)
+    if _db_url:
+        os.environ[_db_env_key] = _ensure_postgres_sslmode_require(_db_url)
 
 import requests
 from flask import Flask, request, session, Response, send_file, jsonify, render_template, redirect
