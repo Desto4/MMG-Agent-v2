@@ -178,11 +178,14 @@ LEAD_FIELDS = [
 
 def _leads_db_xlsx_path():
     """Absolute path to the MMG business leads Excel database (session > env > common defaults)."""
-    from flask import session as _session
-    explicit = (
-        (_session.get("crm_path") or "").strip()
-        or (os.environ.get("TENANT_CRM_XLSX_PATH") or "").strip()
-    )
+    # Session is only available inside a request context
+    try:
+        from flask import session as _session, has_request_context
+        session_path = (_session.get("crm_path") or "").strip() if has_request_context() else ""
+    except Exception:
+        session_path = ""
+
+    explicit = session_path or (os.environ.get("TENANT_CRM_XLSX_PATH") or "").strip()
     if explicit:
         return explicit
     # Auto-discover common drop locations so the file works without any setup
