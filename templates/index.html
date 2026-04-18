@@ -415,6 +415,7 @@
                     <!-- Data connectors -->
                     <div class="bg-gray-50 rounded-xl p-4 space-y-3">
                         <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Data Connectors</p>
+                        <p class="text-xs text-gray-400">Keys are saved on this machine in <code class="text-[11px] bg-gray-100 px-1 rounded">.local_api_keys.json</code> next to <code class="text-[11px] bg-gray-100 px-1 rounded">flask_app.py</code> (not committed to git). Leave a field blank to keep the previous value.</p>
                         <div>
                             <label class="block text-xs text-gray-500 mb-1">Apollo API Key</label>
                             <input id="input-apollo" type="password" placeholder="Apollo key..."
@@ -1286,21 +1287,20 @@ async function saveConfig() {
     }
 
     try {
-        await fetch('/api/config', {
+        const resp = await fetch('/api/config', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(body)
         });
-        // Clear sensitive inputs
-        document.getElementById('input-anthropic').value        = '';
-        document.getElementById('input-apollo').value           = '';
-        document.getElementById('input-hunter').value          = '';
-        document.getElementById('input-hubspot').value          = '';
-        document.getElementById('input-gemini').value           = '';
-        document.getElementById('input-perplexity').value       = '';
+        const out = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            toast(`Could not save settings (${resp.status}). ${out.error || ''}`.trim());
+            return;
+        }
+        // Do not clear API key fields: empty submit would look like "remove key" and confused users.
+        // Keys are stored server-side in .local_api_keys.json (see flask_app.py).
         document.getElementById('input-gmail-address').value      = '';
         document.getElementById('input-gmail-app-password').value = '';
-        document.getElementById('input-crm-path').value           = '';
 
         toggleSettings();
         const providerLabel = currentProvider === 'gemini'

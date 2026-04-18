@@ -5,6 +5,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .env
+.local_api_keys.json
 
 # App outputs
 leads.csv

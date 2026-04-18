@@ -110,7 +110,83 @@ except ImportError:
     _GMAIL_AVAILABLE = False
 
 app = Flask(__name__)
-app.secret_key = os.urandom(24)
+# Stable secret in dev keeps Flask sessions valid across restarts (optional: set FLASK_SECRET_KEY in .env)
+app.secret_key = (
+    os.environ.get("FLASK_SECRET_KEY")
+    or os.environ.get("SECRET_KEY")
+    or os.urandom(24)
+)
+
+# API keys saved from Settings UI (survives server restarts; gitignored)
+_LOCAL_API_KEYS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".local_api_keys.json")
+_LOCAL_SECRET_KEYS = frozenset({
+    "anthropic_key",
+    "apollo_key",
+    "hubspot_token",
+    "gemini_key",
+    "perplexity_key",
+    "hunter_key",
+})
+_LOCAL_CONFIG_KEYS = (
+    "anthropic_key",
+    "apollo_key",
+    "hubspot_token",
+    "gemini_key",
+    "perplexity_key",
+    "hunter_key",
+    "model_provider",
+    "claude_model",
+    "gemini_model",
+    "perplexity_model",
+    "crm_path",
+)
+
+
+def _read_local_api_config():
+    if not os.path.isfile(_LOCAL_API_KEYS_FILE):
+        return {}
+    try:
+        with open(_LOCAL_API_KEYS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_local_api_config(cfg: dict):
+    try:
+        with open(_LOCAL_API_KEYS_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=0)
+    except OSError:
+        pass
+
+
+def _credential(session_key: str, env_name: str) -> str:
+    """Session (from cookie), then disk from Settings save, then process env."""
+    try:
+        s = (session.get(session_key) or "").strip()
+    except RuntimeError:
+        s = ""
+    if s:
+        return s
+    disk = (_read_local_api_config().get(session_key) or "").strip()
+    if disk:
+        return disk
+    return (os.getenv(env_name) or "").strip()
+
+
+def _setting_str(session_key: str, default: str) -> str:
+    """Non-secret setting: session, then disk, then default."""
+    try:
+        s = session.get(session_key)
+    except RuntimeError:
+        s = None
+    if s is not None and str(s).strip() != "":
+        return str(s).strip()
+    disk = _read_local_api_config().get(session_key)
+    if disk is not None and str(disk).strip() != "":
+        return str(disk).strip()
+    return default
 
 # Module-level storage for leads and outreach (per process)
 _leads_store    = []
@@ -263,7 +339,7 @@ LEAD_FIELDS = [
 
 
 def _leads_db_xlsx_path():
-    """Absolute path to the MMG business leads Excel database (session > env > common defaults)."""
+    """Absolute path to the MMG business leads Excel database (session > saved settings > env > defaults)."""
     # Session is only available inside a request context
     try:
         from flask import session as _session, has_request_context
@@ -271,9 +347,10 @@ def _leads_db_xlsx_path():
     except Exception:
         session_path = ""
 
-    explicit = session_path or (os.environ.get("TENANT_CRM_XLSX_PATH") or "").strip()
+    disk_path = (_read_local_api_config().get("crm_path") or "").strip()
+    explicit = session_path or disk_path or (os.environ.get("TENANT_CRM_XLSX_PATH") or "").strip()
     if explicit:
-        return explicit
+        return os.path.expanduser(explicit)
     # Auto-discover common drop locations so the file works without any setup
     candidates = [
         os.path.expanduser("~/Downloads/MMG_Tenant_CRM.xlsx"),
@@ -3019,39 +3096,28 @@ def index():
     return render_template("index.html")
 
 
-def _env_or_session(session_key: str, env_name: str) -> str:
-    """Prefer Flask session value, else environment (both stripped)."""
-    try:
-        s = (session.get(session_key) or "").strip()
-    except RuntimeError:
-        s = ""
-    if s:
-        return s
-    return (os.getenv(env_name) or "").strip()
-
-
 @app.route("/api/config", methods=["GET"])
 def get_config():
     _gmail_addr, _gmail_pw = _get_gmail_creds()
     gmail_connected = bool(_gmail_addr and _gmail_pw)
-    crm_path = (session.get("crm_path") or "").strip() or (os.getenv("TENANT_CRM_XLSX_PATH") or "").strip()
+    crm_path = _setting_str("crm_path", (os.getenv("TENANT_CRM_XLSX_PATH") or "").strip())
     try:
         import dotenv as _dotenv_mod  # noqa: F401
         _dotenv_ok = True
     except ImportError:
         _dotenv_ok = False
     return jsonify({
-        "anthropic":      bool(_env_or_session("anthropic_key", "ANTHROPIC_API_KEY")),
-        "apollo":         bool(_env_or_session("apollo_key", "APOLLO_API_KEY")),
-        "hubspot":        bool(_env_or_session("hubspot_token", "HUBSPOT_TOKEN")),
-        "gemini":         bool(_env_or_session("gemini_key", "GEMINI_API_KEY")),
-        "perplexity":     bool(_env_or_session("perplexity_key", "PERPLEXITY_API_KEY")),
+        "anthropic":      bool(_credential("anthropic_key", "ANTHROPIC_API_KEY")),
+        "apollo":         bool(_credential("apollo_key", "APOLLO_API_KEY")),
+        "hubspot":        bool(_credential("hubspot_token", "HUBSPOT_TOKEN")),
+        "gemini":         bool(_credential("gemini_key", "GEMINI_API_KEY")),
+        "perplexity":     bool(_credential("perplexity_key", "PERPLEXITY_API_KEY")),
         "gmail":          gmail_connected,
-        "crm":            bool(crm_path) and os.path.isfile(crm_path),
-        "model_provider":   session.get("model_provider",   "anthropic"),
-        "claude_model":     session.get("claude_model",     "claude-opus-4-6"),
-        "gemini_model":     session.get("gemini_model",     "gemini-3-flash-preview"),
-        "perplexity_model": session.get("perplexity_model", "sonar-pro"),
+        "crm":            bool(crm_path) and os.path.isfile(os.path.expanduser(crm_path)),
+        "model_provider":   _setting_str("model_provider", "anthropic"),
+        "claude_model":     _setting_str("claude_model", "claude-opus-4-6"),
+        "gemini_model":     _setting_str("gemini_model", "gemini-3-flash-preview"),
+        "perplexity_model": _setting_str("perplexity_model", "sonar-pro"),
         # Local debugging: why keys are missing (no secret values)
         "env_file_loaded": bool(_DOTENV_LOADED_PATH),
         "env_file_path":   _DOTENV_LOADED_PATH or "",
@@ -3062,31 +3128,38 @@ def get_config():
 
 @app.route("/api/config", methods=["POST"])
 def save_config():
-    data = request.get_json(force=True)
-    if data.get("anthropic_key"):
-        session["anthropic_key"]  = data["anthropic_key"]
-    if data.get("apollo_key"):
-        session["apollo_key"]     = data["apollo_key"]
-    if data.get("hubspot_token"):
-        session["hubspot_token"]  = data["hubspot_token"]
-    if data.get("gemini_key"):
-        session["gemini_key"]       = data["gemini_key"]
-    if data.get("model_provider"):
-        session["model_provider"]   = data["model_provider"]
-    if data.get("claude_model"):
-        session["claude_model"]     = data["claude_model"]
-    if data.get("gemini_model"):
-        session["gemini_model"]     = data["gemini_model"]
-    if data.get("perplexity_key"):
-        session["perplexity_key"]   = data["perplexity_key"]
-    if data.get("perplexity_model"):
-        session["perplexity_model"] = data["perplexity_model"]
-    if data.get("hunter_key"):
-        global _hunter_key
-        _hunter_key = data["hunter_key"]
-        session["hunter_key"] = data["hunter_key"]
-    if data.get("crm_path"):
-        session["crm_path"] = data["crm_path"].strip()
+    data = request.get_json(force=True) or {}
+    local = _read_local_api_config()
+
+    def _merge_setting(key: str):
+        if key not in data:
+            return
+        raw = data[key]
+        if raw is None:
+            return
+        if isinstance(raw, str):
+            raw = raw.strip()
+        # Empty password fields in the UI often mean "unchanged" — do not wipe saved keys
+        if key in _LOCAL_SECRET_KEYS and raw == "":
+            return
+        if raw == "" or raw == []:
+            local.pop(key, None)
+            session.pop(key, None)
+        else:
+            local[key] = raw
+            session[key] = raw
+
+    for k in _LOCAL_CONFIG_KEYS:
+        _merge_setting(k)
+
+    global _hunter_key
+    _hunter_key = _credential("hunter_key", "HUNTER_API_KEY")
+
+    try:
+        _write_local_api_config(local)
+    except OSError as e:
+        return jsonify({"ok": False, "error": f"Could not save settings: {e}"}), 500
+
     if data.get("gmail_address") or data.get("gmail_app_password"):
         # Persist to file so credentials survive server restarts
         _gmail_app_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gmail_app.json")
@@ -3114,19 +3187,18 @@ def chat():
     message = data.get("message", "")
     history = data.get("history", [])
 
-    # Read session BEFORE entering the streaming generator
-    anthropic_key  = session.get("anthropic_key")  or os.getenv("ANTHROPIC_API_KEY", "")
-    apollo_key     = session.get("apollo_key")     or os.getenv("APOLLO_API_KEY", "")
-    hubspot_token  = session.get("hubspot_token")  or os.getenv("HUBSPOT_TOKEN", "")
-    gemini_key       = session.get("gemini_key")       or os.getenv("GEMINI_API_KEY", "")
-    model_provider   = session.get("model_provider",   "anthropic")
-    claude_model     = session.get("claude_model",     "claude-opus-4-6")
-    gemini_model     = session.get("gemini_model",     "gemini-2.0-flash")
-    perplexity_key   = session.get("perplexity_key")   or os.getenv("PERPLEXITY_API_KEY", "")
-    # Restore Hunter key into global so enrichment can use it
+    # Session + disk (.local_api_keys.json) + env
+    anthropic_key    = _credential("anthropic_key", "ANTHROPIC_API_KEY")
+    apollo_key       = _credential("apollo_key", "APOLLO_API_KEY")
+    hubspot_token    = _credential("hubspot_token", "HUBSPOT_TOKEN")
+    gemini_key       = _credential("gemini_key", "GEMINI_API_KEY")
+    model_provider   = _setting_str("model_provider", "anthropic")
+    claude_model     = _setting_str("claude_model", "claude-opus-4-6")
+    gemini_model     = _setting_str("gemini_model", "gemini-2.0-flash")
+    perplexity_key   = _credential("perplexity_key", "PERPLEXITY_API_KEY")
     global _hunter_key
-    _hunter_key = session.get("hunter_key") or os.getenv("HUNTER_API_KEY", "") or _hunter_key
-    perplexity_model = session.get("perplexity_model", "sonar-pro")
+    _hunter_key = _credential("hunter_key", "HUNTER_API_KEY") or _hunter_key
+    perplexity_model = _setting_str("perplexity_model", "sonar-pro")
 
     def stream():
         try:
