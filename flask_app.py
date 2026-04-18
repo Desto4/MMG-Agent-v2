@@ -2318,6 +2318,58 @@ def run_agent_anthropic(user_message: str, history: list,
 
 # ── Unified entry point ───────────────────────────────────────────────────────
 
+_LEAD_KEYWORDS = {
+    "hair salon", "hair salons", "barbershop", "barbershops", "barber", "barbers",
+    "nail salon", "nail salons", "salon", "salons", "beauty salon", "beauty salons",
+    "show me", "find me", "pull", "list", "get me", "search for",
+    "leads", "businesses", "contacts",
+}
+
+def _message_wants_leads(msg: str) -> bool:
+    """Return True if the message is asking for businesses/leads from the local DB."""
+    low = msg.lower()
+    return any(kw in low for kw in _LEAD_KEYWORDS)
+
+
+def _auto_crm_prefix(user_message: str) -> str:
+    """
+    If the message sounds like a lead request, call query_tenant_crm immediately
+    and return a system note with the results to prepend to the conversation.
+    Returns empty string if the DB is unavailable or returns no rows.
+    """
+    if not _message_wants_leads(user_message):
+        return ""
+    path = _leads_db_xlsx_path()
+    if not path or not os.path.isfile(path):
+        return ""
+    # Extract keywords from the message to use as query
+    low = user_message.lower()
+    # Strip very generic words so we get meaningful search terms
+    stop = {"show", "me", "find", "get", "list", "pull", "in", "from", "the",
+            "a", "an", "for", "and", "or", "of", "all", "some", "please", "i", "want"}
+    words = [w for w in re.sub(r"[^\w\s]", " ", low).split() if w not in stop]
+    query = " ".join(words[:6])  # max 6 keywords
+    try:
+        result = query_tenant_crm(query=query, limit=50)
+        if result.get("error") or not result.get("rows"):
+            return ""
+        rows = result["rows"]
+        count = result["count"]
+        # Format as a compact summary for the model
+        lines = [f"[DATABASE RESULTS — {count} matches for '{query}' from local leads DB]"]
+        for r in rows[:50]:
+            name = r.get("Business_Name", r.get("business_name", ""))
+            addr = r.get("Business_Address", r.get("business_address", ""))
+            phone = r.get("Business_Phone", r.get("business_phone", ""))
+            email = r.get("Business_Email", r.get("business_email", ""))
+            sheet = r.get("sheet", "")
+            lines.append(f"- {name} | {addr} | {phone} | {email} | [{sheet}]")
+        lines.append("[END DATABASE RESULTS — present these to the user, do NOT search Maps]")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def run_agent(user_message: str, history: list,
               anthropic_key="", apollo_key="", hubspot_token="",
               claude_model="claude-opus-4-6",
@@ -2325,6 +2377,10 @@ def run_agent(user_message: str, history: list,
               gemini_model="gemini-3-flash-preview",
               perplexity_key="", perplexity_model="sonar-pro"):
     """Route to the right model provider based on settings."""
+    # Pre-query the local DB and inject results so the model can't skip them
+    crm_prefix = _auto_crm_prefix(user_message)
+    if crm_prefix:
+        user_message = user_message + "\n\n" + crm_prefix
 
     if model_provider == "gemini":
         gemini_key = gemini_key or os.getenv("GEMINI_API_KEY", "")
