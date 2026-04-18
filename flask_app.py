@@ -422,8 +422,12 @@ def query_tenant_crm(query="", sheet_name=None, limit=50):
     If query is empty, returns the first `limit` rows; otherwise filters rows whose
     concatenated column text matches (all words must appear for multi-word queries).
     """
+    import logging
+    log = logging.getLogger(__name__)
     path = _leads_db_xlsx_path()
+    log.info("[CRM] query_tenant_crm called: query=%r path=%r", query, path)
     if not path:
+        log.warning("[CRM] No Excel path configured")
         return {
             "error": (
                 "Business leads database path not set. Add the Excel file path in Settings → Business Leads Database, "
@@ -432,6 +436,7 @@ def query_tenant_crm(query="", sheet_name=None, limit=50):
             "rows": [],
         }
     if not os.path.isfile(path):
+        log.warning("[CRM] Excel file not found: %s", path)
         return {"error": f"Business leads database file not found: {path}", "rows": []}
 
     limit = max(1, min(int(limit or 50), 200))
@@ -477,6 +482,7 @@ def query_tenant_crm(query="", sheet_name=None, limit=50):
             cols = [d[0] for d in con.description]
 
         rows = [dict(zip(cols, r)) for r in result]
+        log.info("[CRM] query returned %d rows for query=%r", len(rows), query)
         return {
             "rows":        rows,
             "count":       len(rows),
@@ -488,6 +494,7 @@ def query_tenant_crm(query="", sheet_name=None, limit=50):
             "source_rows": _tenant_crm_duck.get("row_count"),
         }
     except Exception as e:
+        log.error("[CRM] SQL error: %s", e)
         return {"error": str(e), "rows": [], "engine": "duckdb"}
 
 
@@ -497,10 +504,9 @@ TOOLS = [
     {
         "name": "search_businesses_maps",
         "description": (
-            "PRIMARY lead discovery tool. Searches Google Maps for businesses by keyword "
-            "and location using a real browser. Returns structured data for each business: "
-            "trade name, address, city, state, business phone, website URL, Google rating, "
-            "and Google review count. Use this as Step 1 for every lead generation request."
+            "FALLBACK lead discovery tool — only use when query_tenant_crm returns 0 results. "
+            "Searches Google Maps for businesses by keyword and location using a real browser. "
+            "Returns trade name, address, city, state, phone, website, Google rating and review count."
         ),
         "input_schema": {
             "type": "object",
