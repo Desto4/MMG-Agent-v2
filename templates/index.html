@@ -336,14 +336,14 @@
             </div>
         </div>
 
-        <!-- SETTINGS MODAL -->
-        <div id="settings-modal" class="hidden fixed inset-0 bg-black/40 z-50 flex items-center justify-center">
-            <div class="bg-white rounded-2xl shadow-xl w-full max-w-md p-8">
-                <div class="flex items-center justify-between mb-6">
+        <!-- SETTINGS MODAL (scroll body; Save/Cancel stay visible at bottom) -->
+        <div id="settings-modal" class="hidden fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[min(90vh,720px)] flex flex-col overflow-hidden">
+                <div class="flex items-center justify-between px-8 pt-8 pb-4 flex-shrink-0 border-b border-gray-100">
                     <h2 class="font-semibold text-gray-900 text-lg">API Configuration</h2>
-                    <button onclick="toggleSettings()" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+                    <button type="button" onclick="toggleSettings()" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
                 </div>
-                <div class="space-y-4">
+                <div class="flex-1 overflow-y-auto overscroll-contain px-8 py-4 space-y-4">
 
                     <!-- AI Model Provider -->
                     <div class="bg-gray-50 rounded-xl p-4 space-y-3">
@@ -460,10 +460,10 @@
                         </div>
                     </div>
                 </div>
-                <div id="config-msg" class="hidden mt-3 text-sm text-teal-600 font-medium"></div>
-                <div class="flex gap-3 mt-6">
-                    <button onclick="saveConfig()" class="flex-1 bg-teal-500 hover:bg-teal-400 text-white font-medium py-2 rounded-lg text-sm transition-colors">Save</button>
-                    <button onclick="toggleSettings()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-600 font-medium py-2 rounded-lg text-sm transition-colors">Cancel</button>
+                <div id="config-msg" class="hidden px-8 pb-2 text-sm text-teal-600 font-medium flex-shrink-0"></div>
+                <div class="flex gap-3 px-8 py-4 flex-shrink-0 border-t border-gray-100 bg-gray-50/80">
+                    <button type="button" onclick="saveConfig()" class="flex-1 bg-teal-500 hover:bg-teal-400 text-white font-medium py-2.5 rounded-lg text-sm transition-colors shadow-sm">Save settings</button>
+                    <button type="button" onclick="toggleSettings()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-600 font-medium py-2.5 rounded-lg text-sm transition-colors">Cancel</button>
                 </div>
             </div>
         </div>
