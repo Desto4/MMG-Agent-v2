@@ -1025,9 +1025,10 @@ TOOLS = [
     {
         "name": "apollo_search_people",
         "description": (
-            "Search for companies/organizations on Apollo.io by keyword and location. "
-            "Only use this if the user explicitly asks for Apollo results. "
-            "Hard cap: returns at most 20 records per request."
+            "Search Apollo.io for companies by keyword and location — use when the user wants missing emails "
+            "or Apollo data for leads already in session. Merge useful emails/websites into the current leads "
+            "and call save_leads_csv so the session has one unified list. "
+            "Hard cap: at most 20 records per request."
         ),
         "input_schema": {
             "type": "object",
@@ -1043,13 +1044,9 @@ TOOLS = [
     {
         "name": "enrich_leads_batch",
         "description": (
-            "Enrich a list of leads with ALL required fields. ALWAYS call this after "
-            "search_businesses_maps. It fills in every lead with: "
-            "(1) Sunbiz: entity/corporate name, formation date, years in business, sunbiz status, "
-            "owner name, registered agent name + address; "
-            "(2) Website scrape: general email (info@...), Instagram URL, Facebook URL; "
-            "(3) Google Maps: rating + review count; "
-            "(4) Web search: owner email + cell phone, registered agent email + cell phone. "
+            "Deep research: enrich the current working leads with Sunbiz, website, reviews, and contact fields. "
+            "Call when the user wants a full report or missing fields (Sunbiz, etc.) on leads from query_tenant_crm "
+            "or search_businesses_maps. Omit `leads` to use session memory. "
             "NEVER call sunbiz_lookup / scrape_website_contact / get_google_reviews individually."
         ),
         "input_schema": {
@@ -1057,7 +1054,7 @@ TOOLS = [
             "properties": {
                 "leads": {
                     "type": "array",
-                    "description": "Full lead objects from search_businesses_maps — pass the entire leads array unchanged",
+                    "description": "Lead objects to enrich; omit to use leads already in this session",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -1091,12 +1088,15 @@ TOOLS = [
                     },
                 },
             },
-            "required": ["leads"],
+            "required": [],
         },
     },
     {
         "name": "hubspot_create_contact",
-        "description": "Create or update a contact in HubSpot CRM with full enriched lead data.",
+        "description": (
+            "Create or update a HubSpot contact by email. Use after enrich_leads_batch when the user wants "
+            "HubSpot records updated with new Sunbiz/phone/website data — call once per lead with the same email."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1207,10 +1207,8 @@ TOOLS = [
     {
         "name": "upload_leads_to_hubspot",
         "description": (
-            "Upload all collected leads to HubSpot CRM in one call. "
-            "Use this whenever the user asks to upload or sync leads to HubSpot. "
-            "Handles all field mapping automatically — do NOT use hubspot_create_contact manually. "
-            "Hard cap: uploads at most 20 leads per request."
+            "Bulk-upload current session leads to HubSpot (max 20 per call). Use when the user asks to push "
+            "prospects to HubSpot. For updating existing contacts after enrichment, use hubspot_create_contact per lead."
         ),
         "input_schema": {
             "type": "object",
@@ -2550,61 +2548,44 @@ def run_tool(name, inputs, apollo_key="", hubspot_token=""):
 SYSTEM_PROMPT = """You are MMG Agent, a lead generation assistant for MMG — a commercial real estate brokerage that helps businesses find and lease commercial spaces.
 
 ## Your purpose
-Find business prospects (tenants) who may be looking to open a new location, expand, or relocate — and draft outreach emails inviting them to consider MMG's available commercial vacancies.
+Find business prospects (tenants) who may be looking to open a new location, expand, or relocate — and help the user work them through discovery, enrichment, and HubSpot in a natural, step-by-step chat.
 
-## Required fields — pull these for EVERY lead, every time, no exceptions
+## Conversation flow (match the user's pace — one major action per turn unless they ask for several)
+
+Follow this pattern when the user is building a pipeline (adapt wording to their request):
+
+1. **Find leads** — Call `query_tenant_crm` first (local Miami-Dade / Broward database). Honor exact counts: if they say "5 nail salons", use `limit=5` and keywords like nail salon + Miami-Dade. Only if the database returns zero rows, use `search_businesses_maps` + `enrich_leads_batch`.
+2. **Fill missing emails (Apollo)** — When they ask to find emails Apollo or fill gaps, call `apollo_search_people` with a tight keyword + location (e.g. industry + "Miami, FL"). Merge any useful emails/websites into the **same** working lead list (match by business name), then call `save_leads_csv` with the merged list so the session has one unified dataset.
+3. **Show everything together** — When they want one combined view, call `get_collected_leads` and/or present the merged table from the current saved leads.
+4. **Upload to HubSpot** — When they ask to push prospects to HubSpot, call `upload_leads_to_hubspot` (caps at 20 per call). Summarize uploaded vs skipped.
+5. **Full research / Sunbiz / missing fields** — When they want a deep-dive report (Sunbiz, website, reviews, etc.), call `enrich_leads_batch` on the current leads (no separate one-off sunbiz calls).
+6. **Update HubSpot after enrichment** — After enrichment, refresh HubSpot by calling `hubspot_create_contact` once per lead with the **same** email and updated `first_name`, `last_name`, `company`, `phone`, `website`, `linkedin` so records reflect new data (handle "already exists" gracefully in your reply).
+
+## Required fields — for full enrichment pulls (enrich_leads_batch)
 
 1.  Business trade name
 2.  Business entity / corporate name (from Sunbiz)
 3.  Company formation date + years in business
-4.  Business general email (e.g. info@salon.com — from website)
-5.  Owner name (from Sunbiz officers section)
+4.  Business general email
+5.  Owner name
 6.  Owner email
-7.  Owner cell phone (for HubSpot texting)
-8.  Registered Agent name (from Sunbiz)
+7.  Owner cell phone
+8.  Registered Agent name
 9.  Registered Agent email
-10. Registered Agent cell phone (for HubSpot texting)
+10. Registered Agent cell phone
 11. Business address
 12. Business phone
 13. Website URL
 14. Instagram URL + Facebook URL
 15. Google rating + Google review count
 
-## Workflow
-
-**Finding leads — ALWAYS follow this order, no exceptions:**
-
-Step 1 — Call `query_tenant_crm` FIRST with keywords from the user's request (industry, city, county, business name).
-          This is your pre-loaded database of 7,302 businesses in Miami-Dade and Broward. It is always faster than Maps.
-          If the user says "nail salons", query "nail salon". If they say "Broward barbers", query "Broward barber". 
-          Use empty query to sample what's available if unsure.
-Step 2 — If the database returns results, present them. Reply with ONE sentence: "Found N [type] in the database — results are below."
-Step 3 — Only if `query_tenant_crm` returns 0 results, fall back to `search_businesses_maps` + `enrich_leads_batch`.
-
-NEVER skip Step 1. NEVER go straight to search_businesses_maps when the user asks for leads or businesses.
-Never call sunbiz_lookup, scrape_website_contact, or get_google_reviews individually.
-Only use apollo_search_people if the user explicitly asks for it.
-
-**Writing outreach emails:**
-When asked to write outreach or draft emails, call save_outreach_csv with personalized emails for each lead.
-Each email should:
-- Be addressed to the owner by first name (or "Business Owner" if unknown)
-- Reference the business by name and show you know something about them (years in business, rating, location)
-- Position MMG as a commercial real estate partner helping businesses find their next space
-- Mention that MMG has available commercial vacancies in their area that could be a great fit
-- Keep it short (3-4 sentences), warm, and professional — not salesy
-- Subject line: personalized, mention their business or area
-- Sign off as: MMG Real Estate Team
-
-**Uploading to HubSpot:**
-NEVER search for new leads. NEVER enrich leads. NEVER call hubspot_create_contact manually.
-Call upload_leads_to_hubspot() — it handles all field mapping automatically.
-Reply with ONE sentence summarising how many contacts were uploaded.
+## Writing outreach emails
+When asked to draft emails, call `save_outreach_csv` with personalized copy. Sign off as: MMG Real Estate Team.
 
 ## Rules
-- Keep ALL post-tool responses to 1 sentence.
-- Do not use web_search unless the user explicitly asks.
-- No markdown tables, no field lists — the UI handles display.
+- Keep replies short (1–2 sentences) after tool runs unless the user asked for a detailed report — then summarize findings clearly without dumping raw JSON.
+- Do not use `web_search` unless the user explicitly asks.
+- No markdown tables in chat — the UI shows tables when tools return leads.
 """
 
 
