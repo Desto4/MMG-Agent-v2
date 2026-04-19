@@ -3219,7 +3219,6 @@ def save_research_report(report_markdown: str, title: str = ""):
         "title":        _research_report_store["title"],
         "char_count":   len(md),
         "download_url": "/api/download/report",
-        "view_url":     "/api/report",
     }
 
 
@@ -3727,20 +3726,28 @@ Follow this pattern when the user is building a pipeline (adapt wording to their
 When asked to draft emails, call `save_outreach_csv` with personalized copy. Sign off as: MMG Real Estate Team.
 
 ## Research report format
-When the user asks for a "research report", "deep dive", "full profile", etc., produce a markdown report covering ALL leads in the working set. Adapt to whatever data each lead actually has — don't fabricate, mark unknowns with "—". Aim for the depth and structure of a tenant-prospecting brief:
+When the user asks for a "research report", "deep dive", "full profile", etc., produce a markdown report covering ALL leads in the working set. Use only the data each lead actually has. NEVER fabricate.
 
-1. **Title block** — category, market, methodology (Sunbiz, Google Maps, websites, social, directories), brief executive summary (3–5 sentences) explaining selection criteria.
-2. **Summary table** — one row per lead with rank, business, area, Google rating, reviews, years in business, Sunbiz status (✅ Active / ⚠ Inactive).
-3. **Per-lead profile** (## heading "N. Trade Name") containing:
-   - One-sentence positioning headline
-   - **Field table**: Trade Name, Corporate Entity, Sunbiz Doc #, Sunbiz Status, Formation Date, Years in Business, Business Email, Business Phone, Business Address, Website, Instagram, Facebook, Google Rating + reviews
-   - **Ownership & Contacts table**: Role, Name, Email, Phone (cover Manager/Member, Officers, Registered Agent + address)
-   - **Notes** paragraph: anything noteworthy from Sunbiz (status changes, multi-entity owners, address overlaps), Google Maps attributes (women-owned, etc.), brand history, recent transitions
-   - **Prospecting Notes** paragraph: why this is a strong MMG prospect and best contact channel
-4. **Outreach Priority Matrix** — table ranking leads (Highest / High / Medium / Low) with the "why" and best contact.
-5. **Research Notes & Disclaimers** — short notes on data sources, contact policy ("only public info, no fabrication, '—' = not publicly discoverable"), Sunbiz status definitions, review-count caveat, outreach compliance reminder.
+**OMIT EMPTY DATA — do not show placeholders or "—".**
+- For per-lead **field tables**: leave a row out entirely if there is no value. Do not write rows like `Instagram | —`.
+- For per-lead **Ownership & Contacts tables**: leave a column out entirely if no row has a value for it (e.g. drop the Email column when no officer/agent has an email). Drop rows that have nothing but a name.
+- For the **Summary table**: drop a column (e.g. "Years in Business") if no lead has data for it. Don't print "—" cells.
+- Skip whole sections (e.g. "Notes", "Ownership & Contacts") if there is nothing meaningful to say. Do not write "No notes available."
 
-After printing the report inline, call `save_research_report({report_markdown, title})` so it's downloadable. Reply with one short confirmation sentence after the tool call (e.g. "Saved — open Research Report below to download as HTML/PDF.").
+Structure (adapt to what's available):
+
+1. **Title block** — category, market, methodology (Sunbiz, Google Maps / Places API, websites, social, directories), brief executive summary (3–5 sentences) explaining selection criteria.
+2. **Summary table** — one row per lead with rank, business, area, plus only the columns where at least one lead has data (e.g. Google rating, reviews, years in business, Sunbiz status).
+3. **Per-lead profile** (`## N. Trade Name`):
+   - One-sentence positioning headline.
+   - **Field table** with only the rows that have values (Trade Name, Corporate Entity, Sunbiz Doc #, Sunbiz Status, Formation Date, Years in Business, Business Email, Business Phone, Business Address, Website, Instagram, Facebook, Google Rating + reviews).
+   - **Ownership & Contacts table** if at least one role has data (Role, Name, then Email and/or Phone columns only if at least one row has them).
+   - **Notes** paragraph only if there's something noteworthy (Sunbiz status changes, multi-entity owners, brand history, recent transitions, Maps attributes like women-owned).
+   - **Prospecting Notes** paragraph: why this is a strong MMG prospect and the best contact channel.
+4. **Outreach Priority Matrix** — table ranking leads (Highest / High / Medium / Low) with "why" and best contact (skip rows with no usable contact info).
+5. **Research Notes & Disclaimers** — short notes on data sources, contact policy ("only publicly available info; nothing fabricated"), Sunbiz status key, review-count caveat, outreach compliance reminder.
+
+After printing the report inline, call `save_research_report({report_markdown, title})` so it's downloadable. Reply with one short confirmation sentence after the tool call (e.g. "Saved — use the Download PDF button below.").
 
 ## Rules
 - Keep replies short (1–2 sentences) after tool runs unless the user asked for a detailed report — then summarize findings clearly without dumping raw JSON.
@@ -4510,7 +4517,199 @@ def _research_report_html(title: str, markdown_body: str) -> str:
 def view_research_report():
     if not _research_report_store.get("markdown"):
         return "<p style=\"font-family:sans-serif;padding:2rem\">No research report yet — ask the agent for a research report.</p>", 404
-    return _research_report_html(_research_report_store.get("title", ""), _research_report_store["markdown"])
+    return _research_report_print_html(_research_report_store.get("title", ""), _research_report_store["markdown"])
+
+
+def _markdown_to_basic_html(md: str) -> str:
+    """Render a small subset of markdown to HTML server-side (so PDF generators
+    don't need JavaScript). Supports # / ## / ### headings, bold, italic, links,
+    fenced code, blockquotes, GitHub-style tables, and bullet/numbered lists."""
+    lines = (md or "").splitlines()
+    out = []
+    i = 0
+
+    def _inline(s: str) -> str:
+        s = (s.replace("&", "&amp;")
+              .replace("<", "&lt;")
+              .replace(">", "&gt;"))
+        s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+        s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
+        s = re.sub(r"(?<!\*)\*([^*\n]+)\*", r"<em>\1</em>", s)
+        s = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r'<a href="\2">\1</a>', s)
+        return s
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        if not stripped:
+            out.append("")
+            i += 1
+            continue
+
+        if stripped.startswith("```"):
+            i += 1
+            buf = []
+            while i < len(lines) and not lines[i].startswith("```"):
+                buf.append(lines[i])
+                i += 1
+            i += 1
+            out.append("<pre><code>" + "\n".join(
+                l.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") for l in buf
+            ) + "</code></pre>")
+            continue
+
+        m = re.match(r"^(#{1,6})\s+(.*)", stripped)
+        if m:
+            level = len(m.group(1))
+            out.append(f"<h{level}>{_inline(m.group(2).strip())}</h{level}>")
+            i += 1
+            continue
+
+        if stripped.startswith(">"):
+            buf = []
+            while i < len(lines) and lines[i].strip().startswith(">"):
+                buf.append(lines[i].strip().lstrip(">").strip())
+                i += 1
+            out.append("<blockquote>" + " ".join(_inline(b) for b in buf) + "</blockquote>")
+            continue
+
+        # GitHub-style table: header row, separator row of dashes, then body
+        if "|" in stripped and i + 1 < len(lines) and re.match(r"^\s*\|?[\s\-:|]+\|?\s*$", lines[i + 1]) and "---" in lines[i + 1]:
+            def _split_row(row):
+                row = row.strip()
+                if row.startswith("|"): row = row[1:]
+                if row.endswith("|"):   row = row[:-1]
+                return [c.strip() for c in row.split("|")]
+            headers = _split_row(stripped)
+            i += 2
+            body = []
+            while i < len(lines) and lines[i].strip() and "|" in lines[i]:
+                body.append(_split_row(lines[i]))
+                i += 1
+            html = "<table><thead><tr>" + "".join(f"<th>{_inline(h)}</th>" for h in headers) + "</tr></thead><tbody>"
+            for row in body:
+                cells = (row + [""] * len(headers))[: len(headers)]
+                html += "<tr>" + "".join(f"<td>{_inline(c)}</td>" for c in cells) + "</tr>"
+            html += "</tbody></table>"
+            out.append(html)
+            continue
+
+        # Unordered list
+        if re.match(r"^\s*[-*+]\s+", line):
+            items = []
+            while i < len(lines) and re.match(r"^\s*[-*+]\s+", lines[i]):
+                items.append(re.sub(r"^\s*[-*+]\s+", "", lines[i]))
+                i += 1
+            out.append("<ul>" + "".join(f"<li>{_inline(x)}</li>" for x in items) + "</ul>")
+            continue
+
+        # Ordered list
+        if re.match(r"^\s*\d+\.\s+", line):
+            items = []
+            while i < len(lines) and re.match(r"^\s*\d+\.\s+", lines[i]):
+                items.append(re.sub(r"^\s*\d+\.\s+", "", lines[i]))
+                i += 1
+            out.append("<ol>" + "".join(f"<li>{_inline(x)}</li>" for x in items) + "</ol>")
+            continue
+
+        # Paragraph (collapse adjacent non-block lines)
+        buf = [stripped]
+        i += 1
+        while i < len(lines):
+            nxt = lines[i].strip()
+            if (not nxt) or re.match(r"^(#{1,6}\s|>|[-*+]\s|\d+\.\s|```)", nxt) or "|" in nxt:
+                break
+            buf.append(nxt)
+            i += 1
+        out.append("<p>" + _inline(" ".join(buf)) + "</p>")
+
+    return "\n".join(out)
+
+
+def _research_report_print_html(title: str, markdown_body: str) -> str:
+    """Print-quality HTML rendered server-side (no client JS), used for PDF."""
+    safe_title = (title or "Tenant Prospecting Research Report").replace("<", "&lt;").replace(">", "&gt;")
+    body_html = _markdown_to_basic_html(markdown_body or "")
+    return (
+        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        f"<title>{safe_title}</title>"
+        "<style>"
+        "@page { size: Letter; margin: 0.55in; }"
+        "body{font-family:-apple-system,Segoe UI,Inter,Helvetica,Arial,sans-serif;color:#111;"
+        "max-width:920px;margin:0 auto;line-height:1.45;font-size:11pt;}"
+        "h1{font-size:18pt;border-bottom:2px solid #0f766e;padding-bottom:.3rem;margin-top:0;}"
+        "h2{font-size:13pt;color:#0f766e;margin-top:1.2rem;page-break-after:avoid;}"
+        "h3{font-size:11.5pt;margin-top:.9rem;page-break-after:avoid;}"
+        "table{width:100%;border-collapse:collapse;margin:.5rem 0;font-size:10pt;page-break-inside:avoid;}"
+        "th,td{border:1px solid #d1d5db;padding:.35rem .55rem;text-align:left;vertical-align:top;}"
+        "th{background:#f3f4f6;font-weight:600;}"
+        "blockquote{border-left:3px solid #0f766e;color:#374151;margin:.7rem 0;padding:.15rem .7rem;background:#f9fafb;}"
+        "code{background:#f3f4f6;padding:.05em .35em;border-radius:3px;font-family:ui-monospace,monospace;font-size:.9em;}"
+        "ul,ol{margin:.4rem 0 .6rem 1.2rem;}"
+        "p{margin:.45rem 0;}"
+        ".meta{color:#6b7280;font-size:9pt;margin-top:-.3rem;}"
+        "</style></head><body>"
+        f"<h1>{safe_title}</h1>"
+        "<p class=\"meta\">Generated by MMG Agent</p>"
+        f"{body_html}"
+        "</body></html>"
+    )
+
+
+def _render_pdf_from_html(html: str) -> bytes:
+    """Render HTML to PDF using whichever engine is available.
+
+    Order:
+      1. Playwright (Chromium) — already a project dep, identical Letter-size output
+         on Render and local. Most reliable when cairo isn't available.
+      2. WeasyPrint — if installed (needs cairo system libs).
+      3. xhtml2pdf — pure-Python fallback (smaller, less polished tables).
+    Returns b"" if all attempts fail."""
+    import logging as _logging
+    log = _logging.getLogger(__name__)
+
+    # 1) Playwright print-to-PDF — same engine that prints from a real browser.
+    try:
+        from playwright.sync_api import sync_playwright
+        launch_kwargs = dict(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(**launch_kwargs)
+            ctx = browser.new_context()
+            page = ctx.new_page()
+            page.set_content(html, wait_until="domcontentloaded")
+            pdf = page.pdf(
+                format="Letter",
+                margin={"top": "0.55in", "right": "0.55in", "bottom": "0.55in", "left": "0.55in"},
+                print_background=True,
+            )
+            browser.close()
+            if pdf:
+                return pdf
+    except Exception as e:
+        log.warning("[pdf] playwright failed: %s", e)
+
+    # 2) WeasyPrint — if system has cairo + pango
+    try:
+        from weasyprint import HTML  # type: ignore
+        return HTML(string=html, base_url=request.host_url).write_pdf() or b""
+    except Exception as e:
+        log.warning("[pdf] weasyprint unavailable: %s", e)
+
+    # 3) xhtml2pdf — pure-Python fallback
+    try:
+        from xhtml2pdf import pisa  # type: ignore
+        buf = io.BytesIO()
+        result = pisa.CreatePDF(src=html, dest=buf)
+        if not result.err:
+            return buf.getvalue()
+    except Exception as e:
+        log.warning("[pdf] xhtml2pdf unavailable: %s", e)
+
+    return b""
 
 
 @app.route("/api/download/report")
@@ -4519,11 +4718,25 @@ def download_research_report():
         return jsonify({"error": "No research report available"}), 404
     title = _research_report_store.get("title", "research_report")
     fname = re.sub(r"[^a-zA-Z0-9_\-]+", "_", title).strip("_") or "research_report"
-    html = _research_report_html(title, _research_report_store["markdown"])
+    html  = _research_report_print_html(title, _research_report_store["markdown"])
+
+    pdf_bytes = _render_pdf_from_html(html)
+    if pdf_bytes:
+        return Response(
+            pdf_bytes,
+            mimetype="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={fname}.pdf"},
+        )
+
+    # Fallback: serve a print-ready HTML that auto-opens the print dialog
+    print_html = html.replace(
+        "</body></html>",
+        "<script>window.addEventListener('load',()=>setTimeout(()=>window.print(),300));</script></body></html>",
+    )
     return Response(
-        html,
+        print_html,
         mimetype="text/html",
-        headers={"Content-Disposition": f"attachment; filename={fname}.html"},
+        headers={"Content-Disposition": f"inline; filename={fname}.html"},
     )
 
 
