@@ -3730,9 +3730,10 @@ When the user asks for a "research report", "deep dive", "full profile", etc., p
 
 **OMIT EMPTY DATA — do not show placeholders or "—".**
 - For per-lead **field tables**: leave a row out entirely if there is no value. Do not write rows like `Instagram | —`.
-- For per-lead **Ownership & Contacts tables**: leave a column out entirely if no row has a value for it (e.g. drop the Email column when no officer/agent has an email). Drop rows that have nothing but a name.
 - For the **Summary table**: drop a column (e.g. "Years in Business") if no lead has data for it. Don't print "—" cells.
-- Skip whole sections (e.g. "Notes", "Ownership & Contacts") if there is nothing meaningful to say. Do not write "No notes available."
+- Skip whole sections if there is nothing meaningful to say. Do not write "No notes available."
+
+**DO NOT include Owner or Registered Agent sections / fields in the report.** No "Ownership & Contacts" table, no Owner Name / Owner Email / Owner Phone rows, no Registered Agent / Agent Address / Agent Email / Agent Phone rows. Skip them even when the data exists. If a Sunbiz status change is worth mentioning, put it in the Notes paragraph without naming individuals.
 
 Structure (adapt to what's available):
 
@@ -3740,11 +3741,10 @@ Structure (adapt to what's available):
 2. **Summary table** — one row per lead with rank, business, area, plus only the columns where at least one lead has data (e.g. Google rating, reviews, years in business, Sunbiz status).
 3. **Per-lead profile** (`## N. Trade Name`):
    - One-sentence positioning headline.
-   - **Field table** with only the rows that have values (Trade Name, Corporate Entity, Sunbiz Doc #, Sunbiz Status, Formation Date, Years in Business, Business Email, Business Phone, Business Address, Website, Instagram, Facebook, Google Rating + reviews).
-   - **Ownership & Contacts table** if at least one role has data (Role, Name, then Email and/or Phone columns only if at least one row has them).
-   - **Notes** paragraph only if there's something noteworthy (Sunbiz status changes, multi-entity owners, brand history, recent transitions, Maps attributes like women-owned).
-   - **Prospecting Notes** paragraph: why this is a strong MMG prospect and the best contact channel.
-4. **Outreach Priority Matrix** — table ranking leads (Highest / High / Medium / Low) with "why" and best contact (skip rows with no usable contact info).
+   - **Field table** with only the rows that have values, drawn from this allowed set ONLY: Trade Name, Corporate Entity, Sunbiz Doc #, Sunbiz Status, Formation Date, Years in Business, Business Email, Business Phone, Business Address, Website, Instagram, Facebook, Google Rating + reviews.
+   - **Notes** paragraph only if there's something noteworthy at the **business** level (status changes, brand history, recent transitions, Google attributes). Don't name owners/officers/agents.
+   - **Prospecting Notes** paragraph: why this is a strong MMG prospect and the best business-level contact channel (general business email, business phone, website contact form).
+4. **Outreach Priority Matrix** — table ranking leads (Highest / High / Medium / Low) with "why" and best **business** contact (general email / phone / website). Skip rows with no usable contact info.
 5. **Research Notes & Disclaimers** — short notes on data sources, contact policy ("only publicly available info; nothing fabricated"), Sunbiz status key, review-count caveat, outreach compliance reminder.
 
 After printing the report inline, call `save_research_report({report_markdown, title})` so it's downloadable. Reply with one short confirmation sentence after the tool call (e.g. "Saved — use the Download PDF button below.").
