@@ -2152,14 +2152,45 @@ def _hunter_domain_search(domain):
         return ""
 
 
+def _maps_search_url(query: str) -> str:
+    # hl=en&gl=us forces English UI so our selectors and aria-labels match.
+    return f"https://www.google.com/maps/search/{quote_plus(query)}?hl=en&gl=us"
+
+
+def _dismiss_google_consent(page):
+    """Click through Google's 'Before you continue' / cookie consent page if present.
+    Without this, headless Chromium often gets stuck on the consent wall and
+    the Maps panel never loads, so every extractor returns blank."""
+    try:
+        for sel in (
+            'button[aria-label*="Accept all" i]',
+            'button[aria-label*="Agree" i]',
+            'button:has-text("Accept all")',
+            'button:has-text("I agree")',
+            'form[action*="consent"] button',
+            'button[jsname="b3VHJd"]',
+        ):
+            btn = page.query_selector(sel)
+            if btn:
+                try:
+                    btn.click(timeout=2000)
+                    page.wait_for_load_state("domcontentloaded", timeout=8000)
+                    return True
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return False
+
+
 def get_google_reviews(business_name, city="", state=""):
     """
     Open Google Maps for the business and extract:
       - star rating + review count
       - website URL (when listed in the panel)
       - address + business phone (when present)
-    Tries multiple query variants so we don't return blanks for businesses
-    that ARE on Maps under a slightly different query.
+    Handles the Google consent wall, tries multiple query variants, and
+    falls back to a Google Search website lookup if Maps yields nothing.
     """
     from playwright.sync_api import sync_playwright
     import time, logging as _logging
@@ -2177,12 +2208,12 @@ def get_google_reviews(business_name, city="", state=""):
     loc  = " ".join([p for p in [city, state] if p]).strip()
     if base and loc:
         queries.append(f"{base} {loc}")
-    if base:
-        queries.append(base)
     if base and city:
         queries.append(f"{base} {city}")
     if base and state and not loc:
         queries.append(f"{base} {state}")
+    if base:
+        queries.append(base)
     seen_q = set()
     queries = [q for q in queries if not (q in seen_q or seen_q.add(q))]
 
@@ -2192,7 +2223,12 @@ def get_google_reviews(business_name, city="", state=""):
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(
                     headless=True,
-                    args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+                    args=[
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--disable-blink-features=AutomationControlled",
+                    ],
                 )
                 context = browser.new_context(
                     user_agent=(
@@ -2200,15 +2236,45 @@ def get_google_reviews(business_name, city="", state=""):
                         "AppleWebKit/537.36 (KHTML, like Gecko) "
                         "Chrome/120.0.0.0 Safari/537.36"
                     ),
-                    viewport={"width": 1280, "height": 800},
+                    viewport={"width": 1366, "height": 900},
                     locale="en-US",
                 )
+                # Pre-set the CONSENT cookie so Google skips the consent wall.
+                try:
+                    context.add_cookies([
+                        {
+                            "name":   "CONSENT",
+                            "value":  "YES+cb.20210720-07-p0.en+FX+410",
+                            "domain": ".google.com",
+                            "path":   "/",
+                        },
+                        {
+                            "name":   "SOCS",
+                            "value":  "CAESEwgDEgk0ODE3Nzg3MjQaAmVuIAEaBgiA_LyaBg",
+                            "domain": ".google.com",
+                            "path":   "/",
+                        },
+                    ])
+                except Exception:
+                    pass
+
                 page = context.new_page()
                 page.goto(
-                    f"https://www.google.com/maps/search/{quote_plus(query)}",
-                    wait_until="domcontentloaded", timeout=25000,
+                    _maps_search_url(query),
+                    wait_until="domcontentloaded", timeout=30000,
                 )
-                page.wait_for_timeout(2200)
+                page.wait_for_timeout(2000)
+
+                # Handle consent wall if cookies didn't suppress it.
+                if "consent.google.com" in (page.url or "") or page.query_selector('form[action*="consent"]'):
+                    if _dismiss_google_consent(page):
+                        page.wait_for_timeout(2000)
+                    # Re-navigate to Maps after consent.
+                    try:
+                        page.goto(_maps_search_url(query), wait_until="domcontentloaded", timeout=30000)
+                        page.wait_for_timeout(2000)
+                    except Exception:
+                        pass
 
                 first = page.query_selector("a.hfpxzc")
                 if first:
@@ -2284,6 +2350,21 @@ def get_google_reviews(business_name, city="", state=""):
                     except Exception:
                         continue
 
+                # Reviews: explicitly look for the parenthesized count next to the rating,
+                # e.g. "4.5 stars (1,234)". Maps often shows it that way without "reviews".
+                if not count:
+                    try:
+                        for sel in ('div.F7nice', 'span.F7nice', 'div.fontBodyMedium'):
+                            el = page.query_selector(sel)
+                            if el:
+                                txt = (el.inner_text() or "").strip()
+                                cm = re.search(r'\(([\d,]+)\)', txt)
+                                if cm:
+                                    count = cm.group(1).replace(",", "")
+                                    break
+                    except Exception:
+                        pass
+
                 if not rating:
                     for sel in ('span.ceNzKf', 'div.F7nice > span', 'span.fontBodyMedium'):
                         try:
@@ -2309,11 +2390,27 @@ def get_google_reviews(business_name, city="", state=""):
             cm = re.search(r'([\d,]+)\s*reviews?', html or "", re.IGNORECASE)
             if cm:
                 count = cm.group(1).replace(",", "")
+            else:
+                # Look for the standalone "(1,234)" pattern that appears near the rating
+                if rating:
+                    rating_pos = (html or "").find(rating)
+                    if rating_pos > 0:
+                        nearby = (html or "")[rating_pos:rating_pos + 600]
+                        cm2 = re.search(r'\(([\d,]+)\)', nearby)
+                        if cm2:
+                            count = cm2.group(1).replace(",", "")
 
     for q in queries:
         _scrape(q)
         if rating and count and website:
             break
+
+    # If Maps failed to find a website, try a lightweight web-search fallback.
+    if not website and base:
+        try:
+            website = _discover_website_via_search(base, city, state)
+        except Exception:
+            pass
 
     return {
         "google_rating":       rating,
@@ -2322,6 +2419,127 @@ def get_google_reviews(business_name, city="", state=""):
         "address":             address,
         "business_phone":      phone,
     }
+
+
+_BAD_WEBSITE_DOMAINS = {
+    "google.com", "google.co", "facebook.com", "instagram.com", "twitter.com",
+    "x.com", "tiktok.com", "linkedin.com", "youtube.com", "yelp.com",
+    "tripadvisor.com", "wikipedia.org", "duckduckgo.com", "bing.com", "maps.app.goo.gl",
+    "mapquest.com", "yellowpages.com", "bbb.org", "indeed.com", "glassdoor.com",
+    "opentable.com", "doordash.com", "ubereats.com", "grubhub.com", "groupon.com",
+    "thumbtack.com", "angi.com", "houzz.com", "pinterest.com", "reddit.com",
+    "apple.com", "amazon.com", "ebay.com", "etsy.com",
+}
+
+
+def _filter_candidate_url(target: str) -> str:
+    """Return the URL if it points to a real business site, else empty string."""
+    from urllib.parse import urlparse as _urlparse
+    try:
+        host = (_urlparse(target).netloc or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if not host or "." not in host:
+            return ""
+        # Strip subdomain so we match e.g. "search.yelp.com" against "yelp.com"
+        host_parts = host.split(".")
+        base_host = ".".join(host_parts[-2:])
+        if base_host in _BAD_WEBSITE_DOMAINS:
+            return ""
+        # Exclude obvious social/profile paths
+        path = (_urlparse(target).path or "").lower()
+        if any(p in path for p in ("/maps/", "/profile", "/pages/", "/business/")):
+            return ""
+        return target.split("?")[0].rstrip("/")
+    except Exception:
+        return ""
+
+
+def _discover_website_via_search(business_name: str, city: str = "", state: str = "") -> str:
+    """Best-effort website discovery via a real headless browser search.
+    Returns a normalized URL or empty string. Skips directory/social domains.
+    Uses Playwright (already required for Sunbiz/Maps) so search engines don't
+    block us as easily as plain `requests`."""
+    if not business_name:
+        return ""
+    from playwright.sync_api import sync_playwright
+
+    parts = [business_name]
+    if city:  parts.append(city)
+    if state: parts.append(state)
+    query = " ".join(parts) + " official site"
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            )
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1366, "height": 900},
+                locale="en-US",
+            )
+            try:
+                context.add_cookies([
+                    {"name": "CONSENT", "value": "YES+cb.20210720-07-p0.en+FX+410", "domain": ".google.com", "path": "/"},
+                    {"name": "SOCS", "value": "CAESEwgDEgk0ODE3Nzg3MjQaAmVuIAEaBgiA_LyaBg", "domain": ".google.com", "path": "/"},
+                ])
+            except Exception:
+                pass
+
+            page = context.new_page()
+            page.goto(
+                f"https://www.google.com/search?q={quote_plus(query)}&hl=en&gl=us",
+                wait_until="domcontentloaded", timeout=25000,
+            )
+            page.wait_for_timeout(1500)
+
+            if "consent.google.com" in (page.url or "") or page.query_selector('form[action*="consent"]'):
+                _dismiss_google_consent(page)
+                try:
+                    page.goto(
+                        f"https://www.google.com/search?q={quote_plus(query)}&hl=en&gl=us",
+                        wait_until="domcontentloaded", timeout=25000,
+                    )
+                    page.wait_for_timeout(1500)
+                except Exception:
+                    pass
+
+            html_text = page.content()
+            browser.close()
+
+        # Google result links use class g and h3 inside an <a href="..."> wrapper
+        # Extract every external href and pick the first non-directory match.
+        from urllib.parse import urlparse as _urlparse, parse_qs as _parse_qs
+
+        candidates = []
+        for raw in re.findall(r'href="(/url\?[^"]+)"', html_text):
+            try:
+                qs = _parse_qs(_urlparse(raw).query)
+                if "q" in qs and qs["q"][0].startswith("http"):
+                    candidates.append(qs["q"][0])
+            except Exception:
+                continue
+        for raw in re.findall(r'href="(https?://[^"]+)"', html_text):
+            candidates.append(raw)
+
+        for raw in candidates:
+            site = _filter_candidate_url(raw)
+            if site:
+                return site
+    except Exception:
+        pass
+
+    return ""
 
 
 def hubspot_create_contact(email, first_name="", last_name="", company="",
@@ -2778,7 +2996,16 @@ def enrich_leads_batch(leads=None):
             except Exception as e:
                 _elog.warning("[enrich] Hunter error for %s: %s", name, e)
 
-        # 3c. Apollo organization fallback — if we still have no website, try Apollo
+        # 3c. Search-engine website fallback (no API key needed)
+        if not result.get("website"):
+            try:
+                discovered = _discover_website_via_search(name, city, state)
+                if discovered:
+                    result["website"] = discovered
+            except Exception as e:
+                _elog.warning("[enrich] Website search fallback error for %s: %s", name, e)
+
+        # 3d. Apollo organization fallback — final attempt to find a website
         if not result.get("website"):
             try:
                 apollo_key = os.environ.get("APOLLO_API_KEY", "").strip()
@@ -2805,6 +3032,22 @@ def enrich_leads_batch(leads=None):
                             break
             except Exception as e:
                 _elog.warning("[enrich] Apollo lookup error for %s: %s", name, e)
+
+        # 3e. Re-scrape any newly discovered website for email/social/phone
+        if result.get("website") and not result.get("general_email"):
+            try:
+                ws = scrape_website_contact(result["website"])
+                if ws.get("general_email"):
+                    result["general_email"] = ws["general_email"]
+                    sources["website"] = True
+                if ws.get("instagram_url") and not result.get("instagram_url"):
+                    result["instagram_url"] = ws["instagram_url"]
+                if ws.get("facebook_url") and not result.get("facebook_url"):
+                    result["facebook_url"] = ws["facebook_url"]
+                if not result.get("business_phone") and ws.get("phones"):
+                    result["business_phone"] = ws["phones"][0]
+            except Exception as e:
+                _elog.warning("[enrich] Re-scrape error for %s: %s", name, e)
 
         # If Apollo gave us a website, scrape it now for email/social
         if sources["apollo"] and result.get("website") and not result.get("general_email"):
