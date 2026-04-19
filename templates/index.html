@@ -928,10 +928,9 @@ function renderLeadsTable(leads) {
     function scoreOf(l, i) {
         let s = 95 - (i * 3);
         if (!l.trade_name && !l.entity_name) s -= 15;
-        if (!l.business_phone && !l.owner_phone) s -= 10;
+        if (!l.business_phone) s -= 10;
         if (!l.website) s -= 8;
         if (!l.google_rating) s -= 7;
-        if (!l.owner_name) s -= 5;
         return Math.max(30, Math.min(99, Math.round(s)));
     }
     // Get city/state for display
@@ -975,7 +974,7 @@ function renderLeadsTable(leads) {
         const badge = estBadge(l);
         const tradeName  = escHtml(l.trade_name  || l.entity_name || l.company || '—');
         const entityName = escHtml(l.entity_name || '');
-        const phone   = escHtml(l.business_phone || l.owner_phone || '');
+        const phone   = escHtml(l.business_phone || '');
         const website = l.website ? l.website.replace(/^https?:\/\//,'').replace(/\/$/,'').split('/')[0] : '';
         const igRaw   = l.instagram_url || '';
         const igHandle = igRaw ? ('@' + igRaw.replace(/^https?:\/\/(www\.)?instagram\.com\//,'').replace(/\/$/,'')) : '';
@@ -992,7 +991,7 @@ function renderLeadsTable(leads) {
         const rowId = `lead-detail-${i}-${Date.now()}`;
         const fbRaw = l.facebook_url || '';
 
-        // Detail panel — all 15 fields
+        // Detail panel (business-level fields; owner/agent omitted by product request)
         const detailPanel = `
         <tr id="${rowId}" class="hidden bg-slate-50 border-b border-gray-100">
             <td colspan="6" class="px-5 py-4">
@@ -1016,33 +1015,6 @@ function renderLeadsTable(leads) {
                         <div>
                             <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-0.5">${label}</div>
                             <div class="text-gray-700">${val || '<span class="text-gray-300">—</span>'}</div>
-                        </div>`).join('')}
-                    <!-- Owner section -->
-                    <div class="col-span-2 md:col-span-3 pt-2 mt-1 border-t border-gray-200">
-                        <span class="font-semibold text-gray-700 text-[11px] uppercase tracking-wide">Owner</span>
-                    </div>
-                    ${[
-                        ['Owner Name',  l.owner_name],
-                        ['Owner Email', l.owner_email],
-                        ['Owner Phone', l.owner_phone],
-                    ].map(([label, val]) => `
-                        <div>
-                            <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-0.5">${label}</div>
-                            <div class="text-gray-700">${val ? escHtml(val) : '<span class="text-gray-300">—</span>'}</div>
-                        </div>`).join('')}
-                    <!-- Registered Agent section -->
-                    <div class="col-span-2 md:col-span-3 pt-2 mt-1 border-t border-gray-200">
-                        <span class="font-semibold text-gray-700 text-[11px] uppercase tracking-wide">Registered Agent</span>
-                    </div>
-                    ${[
-                        ['Name',    l.registered_agent],
-                        ['Address', l.reg_agent_address],
-                        ['Email',   l.reg_agent_email],
-                        ['Phone',   l.reg_agent_phone],
-                    ].map(([label, val]) => `
-                        <div>
-                            <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-0.5">${label}</div>
-                            <div class="text-gray-700">${val ? escHtml(val) : '<span class="text-gray-300">—</span>'}</div>
                         </div>`).join('')}
                 </div>
             </td>
