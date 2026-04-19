@@ -1178,12 +1178,28 @@ TOOLS = [
         },
     },
     {
+        "name": "apollo_enrich_existing_leads",
+        "description": (
+            "ENRICH the leads ALREADY in this session with Apollo data (missing email, "
+            "website, phone, industry, employees, LinkedIn). Does NOT add new leads — "
+            "only fills in blank fields on existing ones. "
+            "Use this whenever the user asks to 'find missing emails on Apollo', "
+            "'enrich these with Apollo', 'fill the gaps with Apollo', etc."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
         "name": "apollo_search_people",
         "description": (
-            "Search Apollo.io for companies by keyword and location — use when the user wants missing emails "
-            "or Apollo data for leads already in session. Merge useful emails/websites into the current leads "
-            "and call save_leads_csv so the session has one unified list. "
-            "Hard cap: at most 20 records per request."
+            "BRAND-NEW lead search on Apollo. Use ONLY when the user explicitly asks "
+            "for new Apollo leads (not when they want to enrich existing ones). "
+            "This REPLACES the current working set with Apollo orgs. "
+            "For 'find missing emails / enrich on Apollo', call apollo_enrich_existing_leads instead. "
+            "Hard cap: 20 records per request."
         ),
         "input_schema": {
             "type": "object",
@@ -1646,7 +1662,161 @@ def web_search(query):
         return {"error": str(e)}
 
 
+def _apollo_search_orgs(keywords=None, locations=None, per_page=20, apollo_key=""):
+    """Raw Apollo organization search — returns list of org dicts or [] on error."""
+    if not apollo_key:
+        return []
+    payload = {
+        "page":                        1,
+        "per_page":                    int(per_page or 20),
+        "q_organization_keyword_tags": [keywords] if keywords else [],
+        "organization_locations":      locations or [],
+    }
+    try:
+        r = requests.post(
+            "https://api.apollo.io/v1/organizations/search",
+            json=payload,
+            headers={
+                "Content-Type":  "application/json",
+                "Cache-Control": "no-cache",
+                "X-Api-Key":     apollo_key,
+            },
+            timeout=30,
+        )
+        data = r.json()
+        return data.get("organizations") or []
+    except Exception:
+        return []
+
+
+def _name_match_score(a: str, b: str) -> float:
+    """Score similarity between two business names (higher = better)."""
+    if not a or not b:
+        return 0.0
+    a_words = set(re.sub(r"[^a-z0-9\s]", "", a.lower()).split())
+    b_words = set(re.sub(r"[^a-z0-9\s]", "", b.lower()).split())
+    noise = {"llc", "inc", "corp", "ltd", "co", "the", "and", "of", "&", "a"}
+    a_core = a_words - noise
+    b_core = b_words - noise
+    if not a_core or not b_core:
+        return 0.0
+    overlap = len(a_core & b_core)
+    return overlap / max(len(a_core), len(b_core))
+
+
+def apollo_enrich_existing_leads(_apollo_key=None):
+    """Enrich the leads ALREADY in session with Apollo data (email, website, phone,
+    industry, employees, LinkedIn). Does NOT add new leads — only fills in
+    missing fields on existing ones. Use this when the user asks to 'find
+    missing emails on Apollo' or 'enrich these with Apollo data'."""
+    global _leads_store
+    apollo_key = _apollo_key or os.getenv("APOLLO_API_KEY", "")
+    if not apollo_key:
+        return {"error": "Apollo API key not configured. Please set it in Settings."}
+    if not _leads_store:
+        return {"error": "No leads in session. Pull leads first (e.g. query_tenant_crm), then ask to enrich them with Apollo."}
+
+    enriched_count = 0
+    new_emails = 0
+    new_websites = 0
+    new_phones = 0
+    no_match = []
+
+    for lead in _leads_store:
+        name = (lead.get("trade_name") or "").strip()
+        if not name:
+            continue
+        city  = (lead.get("city") or "").strip()
+        state = (lead.get("state") or "").strip()
+        loc_terms = [t for t in [city, state] if t]
+        location_query = ", ".join(loc_terms) if loc_terms else None
+
+        orgs = _apollo_search_orgs(
+            keywords=name,
+            locations=[location_query] if location_query else None,
+            per_page=5,
+            apollo_key=apollo_key,
+        )
+
+        # Fall back to no-location search if first attempt missed
+        if not orgs and location_query:
+            orgs = _apollo_search_orgs(
+                keywords=name, locations=None, per_page=5, apollo_key=apollo_key
+            )
+
+        best = None
+        best_score = 0.0
+        for org in orgs:
+            score = _name_match_score(name, org.get("name") or "")
+            if score > best_score:
+                best_score = score
+                best = org
+
+        if not best or best_score < 0.4:
+            no_match.append(name)
+            continue
+
+        # Pull useful fields and merge ONLY into blank slots
+        website = (best.get("website_url") or best.get("primary_domain") or "").strip()
+        if website and not website.startswith("http"):
+            website = "https://" + website
+        if website and not lead.get("website"):
+            lead["website"] = website.rstrip("/")
+            new_websites += 1
+
+        # Email via Hunter on the discovered domain
+        if website and not lead.get("general_email"):
+            try:
+                em = _hunter_domain_search(website)
+                if em:
+                    lead["general_email"] = em
+                    new_emails += 1
+            except Exception:
+                pass
+
+        # Phone
+        phone = best.get("phone") or ""
+        if not phone:
+            pp = best.get("primary_phone") or {}
+            phone = pp.get("sanitized_number") or pp.get("number") or ""
+        if phone and not lead.get("business_phone"):
+            lead["business_phone"] = phone
+            new_phones += 1
+
+        # Other useful Apollo metadata (only fill if blank)
+        if not lead.get("industry") and best.get("industry"):
+            lead["industry"] = best.get("industry")
+        if not lead.get("employees") and best.get("estimated_num_employees"):
+            lead["employees"] = str(best["estimated_num_employees"])
+        if not lead.get("linkedin_url") and best.get("linkedin_url"):
+            lead["linkedin_url"] = best["linkedin_url"]
+        if not lead.get("facebook_url") and best.get("facebook_url"):
+            lead["facebook_url"] = best["facebook_url"]
+        if not lead.get("address") and best.get("raw_address"):
+            lead["address"] = best["raw_address"]
+
+        enriched_count += 1
+
+    _save_leads_to_file(_leads_store)
+
+    return {
+        "leads": _leads_store,
+        "summary": {
+            "total_leads":      len(_leads_store),
+            "matched_on_apollo": enriched_count,
+            "no_apollo_match":   len(no_match),
+            "emails_added":      new_emails,
+            "websites_added":    new_websites,
+            "phones_added":      new_phones,
+        },
+        "no_match": no_match,
+    }
+
+
 def apollo_search_people(keywords=None, locations=None, num_results=20, _apollo_key=None):
+    """NEW LEAD SEARCH on Apollo. Use only when the user explicitly wants brand-new
+    Apollo leads (not when they ask to enrich existing leads). Returns the leads
+    and stores them as the working set, REPLACING anything previously in session."""
     global _leads_store
     apollo_key = _apollo_key or os.getenv("APOLLO_API_KEY", "")
     if not apollo_key:
@@ -3129,6 +3299,7 @@ TOOL_MAP = {
     "search_businesses_maps": search_businesses_maps,
     "web_search":             web_search,
     "apollo_search_people":   apollo_search_people,
+    "apollo_enrich_existing_leads": apollo_enrich_existing_leads,
     "enrich_leads_batch":     enrich_leads_batch,
     "get_collected_leads":      get_collected_leads,
     "query_tenant_crm":         query_tenant_crm,
@@ -3149,7 +3320,7 @@ def run_tool(name, inputs, apollo_key="", hubspot_token=""):
     if fn is None:
         return {"error": f"Unknown tool: {name}"}
     kwargs = dict(inputs)
-    if name == "apollo_search_people":
+    if name in ("apollo_search_people", "apollo_enrich_existing_leads"):
         kwargs["_apollo_key"] = apollo_key
     elif name in ("hubspot_create_contact", "upload_leads_to_hubspot"):
         kwargs["_hubspot_token"] = hubspot_token
@@ -3168,7 +3339,7 @@ Find business prospects (tenants) who may be looking to open a new location, exp
 Follow this pattern when the user is building a pipeline (adapt wording to their request):
 
 1. **Find leads** — Call `query_tenant_crm` first (local Miami-Dade / Broward database). Honor exact counts: if they say "5 nail salons", use `limit=5` and keywords like nail salon + Miami-Dade. Only if the database returns zero rows, use `search_businesses_maps` + `enrich_leads_batch`.
-2. **Fill missing emails (Apollo)** — When they ask to find emails Apollo or fill gaps, call `apollo_search_people` with a tight keyword + location (e.g. industry + "Miami, FL"). Merge any useful emails/websites into the **same** working lead list (match by business name), then call `save_leads_csv` with the merged list so the session has one unified dataset.
+2. **Fill missing emails (Apollo)** — When they ask to "search Apollo", "find missing emails on Apollo", or "enrich with Apollo" for the **leads they already have**, call `apollo_enrich_existing_leads` (no arguments). It looks up each session lead on Apollo and fills in blank email/website/phone/industry fields without replacing the working set. Only call `apollo_search_people` if the user explicitly asks for **brand-new** Apollo leads (it REPLACES the working set).
 3. **Show everything together** — When they want one combined view, call `get_collected_leads` and/or present the merged table from the current saved leads.
 4. **Upload to HubSpot** — When they ask to push prospects to HubSpot, call `upload_leads_to_hubspot` (caps at 20 per call). Summarize uploaded vs skipped.
 5. **Full research / Sunbiz / missing fields** — When they want a deep-dive report (Sunbiz, website, reviews, etc.), call `enrich_leads_batch` on the current leads (no separate one-off sunbiz calls).

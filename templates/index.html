@@ -686,6 +686,7 @@ function appendToolChip(name, done) {
     const container = document.getElementById('messages-container');
     const icons = {
         apollo_search_people:   '🔍',
+        apollo_enrich_existing_leads: '✨',
         hubspot_create_contact: '📥',
         web_search:             '🌐',
         save_outreach_csv:      '💾',
@@ -823,7 +824,7 @@ async function sendMessage(prefill) {
                     }
 
                     // Render table after enrichment, Apollo, or get_collected_leads
-                    const leadsResult = ['apollo_search_people','enrich_leads_batch','get_collected_leads','query_tenant_crm']
+                    const leadsResult = ['apollo_search_people','apollo_enrich_existing_leads','enrich_leads_batch','get_collected_leads','query_tenant_crm']
                         .includes(evt.name) && evt.result?.leads?.length ? evt.result.leads : null;
                     if (leadsResult) {
                         const tableDiv = document.createElement('div');
@@ -899,7 +900,7 @@ async function sendMessage(prefill) {
 
 function getToolIcon(name) {
     const icons = {
-        apollo_search_people: '🔍', hubspot_create_contact: '📥',
+        apollo_search_people: '🔍', apollo_enrich_existing_leads: '✨', hubspot_create_contact: '📥',
         upload_leads_to_hubspot: '📥', get_collected_leads: '📋',
         web_search: '🌐', save_outreach_csv: '💾', save_leads_csv: '💾',
         enrich_leads_batch: '⚡', sunbiz_lookup: '🏛', scrape_website_contact: '🌐',
