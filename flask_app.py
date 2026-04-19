@@ -1388,6 +1388,30 @@ TOOLS = [
         },
     },
     {
+        "name": "save_research_report",
+        "description": (
+            "Persist an in-depth research report (markdown) for the current leads so the user "
+            "can view it inline and download it as HTML. Call this AFTER you've written the full "
+            "report in your reply when the user asks for a 'research report' or 'deep dive'. "
+            "Pass the entire markdown body as `report_markdown` and a short `title` like "
+            "'Nail Salon — Tenant Prospecting Report — Miami-Dade — April 2026'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "report_markdown": {
+                    "type": "string",
+                    "description": "The full research report in markdown — sections, tables, bullets included.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short report title shown in the download header.",
+                },
+            },
+            "required": ["report_markdown"],
+        },
+    },
+    {
         "name": "save_outreach_csv",
         "description": "Save email drafts to outreach_drafts.csv.",
         "input_schema": {
@@ -2877,6 +2901,36 @@ def _save_leads_to_file(leads):
         pass
 
 
+_research_report_store = {"markdown": "", "title": "", "ts": ""}
+
+
+def save_research_report(report_markdown: str, title: str = ""):
+    """Save the in-depth research report markdown so the user can download it.
+    The model writes the markdown; this tool just persists it and returns a link."""
+    global _research_report_store
+    md = (report_markdown or "").strip()
+    if not md:
+        return {"error": "Empty report. Pass the full markdown report as `report_markdown`."}
+    _research_report_store = {
+        "markdown": md,
+        "title":    (title or "Tenant Prospecting Research Report").strip(),
+        "ts":       datetime.now().isoformat(timespec="seconds"),
+    }
+    try:
+        path = os.path.join(os.path.dirname(__file__), "research_report.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(md)
+    except Exception:
+        pass
+    return {
+        "success":      True,
+        "title":        _research_report_store["title"],
+        "char_count":   len(md),
+        "download_url": "/api/download/report",
+        "view_url":     "/api/report",
+    }
+
+
 def save_outreach_csv(drafts):
     global _outreach_store
     _outreach_store = drafts
@@ -3310,6 +3364,7 @@ TOOL_MAP = {
     "hubspot_create_contact": hubspot_create_contact,
     "save_leads_csv":         save_leads_csv,
     "save_outreach_csv":      save_outreach_csv,
+    "save_research_report":   save_research_report,
     "send_gmail_email":       send_gmail_email,
     "create_gmail_drafts":    create_gmail_drafts,
 }
@@ -3342,7 +3397,7 @@ Follow this pattern when the user is building a pipeline (adapt wording to their
 2. **Fill missing emails (Apollo)** — When they ask to "search Apollo", "find missing emails on Apollo", or "enrich with Apollo" for the **leads they already have**, call `apollo_enrich_existing_leads` (no arguments). It looks up each session lead on Apollo and fills in blank email/website/phone/industry fields without replacing the working set. Only call `apollo_search_people` if the user explicitly asks for **brand-new** Apollo leads (it REPLACES the working set).
 3. **Show everything together** — When they want one combined view, call `get_collected_leads` and/or present the merged table from the current saved leads.
 4. **Upload to HubSpot** — When they ask to push prospects to HubSpot, call `upload_leads_to_hubspot` (caps at 20 per call). Summarize uploaded vs skipped.
-5. **Full research / Sunbiz / missing fields** — When they want a deep-dive report (Sunbiz, website, reviews, etc.), call `enrich_leads_batch` on the current leads (no separate one-off sunbiz calls).
+5. **Full research / Sunbiz / missing fields** — When they want a deep-dive report (Sunbiz, website, reviews, etc.), first call `enrich_leads_batch` on the current leads to refresh the data (no separate one-off sunbiz calls). Then write an in-depth markdown research report (see "Research report format" below) and call `save_research_report` with the full markdown so the user can download it.
 6. **Update HubSpot after enrichment** — After enrichment, refresh HubSpot by calling `hubspot_create_contact` once per lead with the **same** email and updated `first_name`, `last_name`, `company`, `phone`, `website`, `linkedin` so records reflect new data (handle "already exists" gracefully in your reply).
 
 ## Required fields — for full enrichment pulls (enrich_leads_batch)
@@ -3365,6 +3420,22 @@ Follow this pattern when the user is building a pipeline (adapt wording to their
 
 ## Writing outreach emails
 When asked to draft emails, call `save_outreach_csv` with personalized copy. Sign off as: MMG Real Estate Team.
+
+## Research report format
+When the user asks for a "research report", "deep dive", "full profile", etc., produce a markdown report covering ALL leads in the working set. Adapt to whatever data each lead actually has — don't fabricate, mark unknowns with "—". Aim for the depth and structure of a tenant-prospecting brief:
+
+1. **Title block** — category, market, methodology (Sunbiz, Google Maps, websites, social, directories), brief executive summary (3–5 sentences) explaining selection criteria.
+2. **Summary table** — one row per lead with rank, business, area, Google rating, reviews, years in business, Sunbiz status (✅ Active / ⚠ Inactive).
+3. **Per-lead profile** (## heading "N. Trade Name") containing:
+   - One-sentence positioning headline
+   - **Field table**: Trade Name, Corporate Entity, Sunbiz Doc #, Sunbiz Status, Formation Date, Years in Business, Business Email, Business Phone, Business Address, Website, Instagram, Facebook, Google Rating + reviews
+   - **Ownership & Contacts table**: Role, Name, Email, Phone (cover Manager/Member, Officers, Registered Agent + address)
+   - **Notes** paragraph: anything noteworthy from Sunbiz (status changes, multi-entity owners, address overlaps), Google Maps attributes (women-owned, etc.), brand history, recent transitions
+   - **Prospecting Notes** paragraph: why this is a strong MMG prospect and best contact channel
+4. **Outreach Priority Matrix** — table ranking leads (Highest / High / Medium / Low) with the "why" and best contact.
+5. **Research Notes & Disclaimers** — short notes on data sources, contact policy ("only public info, no fabrication, '—' = not publicly discoverable"), Sunbiz status definitions, review-count caveat, outreach compliance reminder.
+
+After printing the report inline, call `save_research_report({report_markdown, title})` so it's downloadable. Reply with one short confirmation sentence after the tool call (e.g. "Saved — open Research Report below to download as HTML/PDF.").
 
 ## Rules
 - Keep replies short (1–2 sentences) after tool runs unless the user asked for a detailed report — then summarize findings clearly without dumping raw JSON.
@@ -3970,6 +4041,62 @@ def clear_leads():
     _leads_store = []
     _outreach_store = []
     return jsonify({"ok": True})
+
+
+def _research_report_html(title: str, markdown_body: str) -> str:
+    """Wrap the report markdown in a print-friendly HTML page."""
+    safe_title = (title or "Tenant Prospecting Research Report").replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        "<!DOCTYPE html><html lang=\"en\"><head>"
+        f"<meta charset=\"utf-8\"><title>{safe_title}</title>"
+        "<script src=\"https://cdn.jsdelivr.net/npm/marked/marked.min.js\"></script>"
+        "<style>"
+        "body{font-family:-apple-system,Segoe UI,Inter,Helvetica,Arial,sans-serif;color:#111;"
+        "max-width:920px;margin:40px auto;padding:0 24px;line-height:1.55;}"
+        "h1{font-size:1.6rem;border-bottom:2px solid #0f766e;padding-bottom:.4rem;}"
+        "h2{font-size:1.2rem;margin-top:1.6rem;color:#0f766e;}"
+        "h3{font-size:1.05rem;margin-top:1.1rem;}"
+        "table{width:100%;border-collapse:collapse;margin:.6rem 0;font-size:.92rem;}"
+        "th,td{border:1px solid #e5e7eb;padding:.45rem .6rem;text-align:left;vertical-align:top;}"
+        "th{background:#f3f4f6;font-weight:600;}"
+        "blockquote{border-left:3px solid #0f766e;color:#374151;margin:.8rem 0;padding:.2rem .8rem;background:#f9fafb;}"
+        "code{background:#f3f4f6;padding:.1em .35em;border-radius:4px;font-family:ui-monospace,monospace;}"
+        "@media print{a{color:inherit;text-decoration:none;}body{margin:0.4in;}}"
+        ".meta{color:#6b7280;font-size:.85rem;margin-top:-.4rem;}"
+        ".actions{margin:.5rem 0 1.4rem;}"
+        ".actions button{background:#0f766e;color:#fff;border:0;padding:.4rem .8rem;border-radius:6px;cursor:pointer;}"
+        "</style></head><body>"
+        f"<h1>{safe_title}</h1>"
+        "<p class=\"meta\">Generated by MMG Agent</p>"
+        "<div class=\"actions\"><button onclick=\"window.print()\">Print or Save as PDF</button></div>"
+        f"<div id=\"report-body\" data-md=\"{markdown_body and ''}\"></div>"
+        "<script>"
+        f"const _md = {json.dumps(markdown_body)};"
+        "document.getElementById('report-body').innerHTML = marked.parse(_md);"
+        "</script>"
+        "</body></html>"
+    )
+
+
+@app.route("/api/report")
+def view_research_report():
+    if not _research_report_store.get("markdown"):
+        return "<p style=\"font-family:sans-serif;padding:2rem\">No research report yet — ask the agent for a research report.</p>", 404
+    return _research_report_html(_research_report_store.get("title", ""), _research_report_store["markdown"])
+
+
+@app.route("/api/download/report")
+def download_research_report():
+    if not _research_report_store.get("markdown"):
+        return jsonify({"error": "No research report available"}), 404
+    title = _research_report_store.get("title", "research_report")
+    fname = re.sub(r"[^a-zA-Z0-9_\-]+", "_", title).strip("_") or "research_report"
+    html = _research_report_html(title, _research_report_store["markdown"])
+    return Response(
+        html,
+        mimetype="text/html",
+        headers={"Content-Disposition": f"attachment; filename={fname}.html"},
+    )
 
 
 # ── Gmail OAuth endpoints ──────────────────────────────────────────────────────

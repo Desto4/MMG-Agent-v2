@@ -690,7 +690,8 @@ function appendToolChip(name, done) {
         hubspot_create_contact: '📥',
         web_search:             '🌐',
         save_outreach_csv:      '💾',
-        save_leads_csv:         '💾'
+        save_leads_csv:         '💾',
+        save_research_report:   '📄'
     };
     const icon = icons[name] || '⚙️';
     const label = name.replace(/_/g, ' ');
@@ -839,6 +840,17 @@ async function sendMessage(prefill) {
                             renderTasks();
                         }
                     }
+                    if (evt.name === 'save_research_report' && evt.result?.success) {
+                        const reportDiv = document.createElement('div');
+                        reportDiv.innerHTML = renderResearchReportCard(evt.result);
+                        document.getElementById('messages-container').appendChild(reportDiv.firstElementChild);
+                        scrollToBottom();
+                        if (task) {
+                            task.outputs = task.outputs.filter(o => !o.includes('research report'));
+                            task.outputs.push('research report');
+                            renderTasks();
+                        }
+                    }
                     if (evt.name === 'save_outreach_csv' && evt.result?.success) {
                         hasOutreach = true;
                         if (task) {
@@ -902,7 +914,7 @@ function getToolIcon(name) {
     const icons = {
         apollo_search_people: '🔍', apollo_enrich_existing_leads: '✨', hubspot_create_contact: '📥',
         upload_leads_to_hubspot: '📥', get_collected_leads: '📋',
-        web_search: '🌐', save_outreach_csv: '💾', save_leads_csv: '💾',
+        web_search: '🌐', save_outreach_csv: '💾', save_leads_csv: '💾', save_research_report: '📄',
         enrich_leads_batch: '⚡', sunbiz_lookup: '🏛', scrape_website_contact: '🌐',
         get_google_reviews: '⭐', search_businesses_maps: '🗺️',
         send_gmail_email: '📤', create_gmail_drafts: '📧'
@@ -1337,6 +1349,34 @@ function fmtMs(ms) {
 }
 function fmtNum(n) { return Number(n).toLocaleString(); }
 function fmtCost(c) { return c < 0.0001 ? '<$0.0001' : '$'+Number(c).toFixed(4); }
+
+// ── Inline Research Report card ────────────────────────────────────────────
+function renderResearchReportCard(result) {
+    const title = (result.title || 'Research Report').replace(/"/g, '&quot;');
+    const chars = (result.char_count || 0).toLocaleString();
+    return `
+    <div class="flex items-start space-x-4 my-3">
+      <div class="w-8 flex-shrink-0"></div>
+      <div class="flex-1">
+        <div class="border border-teal-200 bg-teal-50/40 rounded-xl p-4 flex items-center justify-between gap-4">
+          <div class="min-w-0">
+            <p class="text-xs font-semibold text-teal-700 uppercase tracking-wide mb-1">Research Report</p>
+            <p class="text-sm font-medium text-gray-900 truncate">${title}</p>
+            <p class="text-xs text-gray-500">${chars} characters · markdown</p>
+          </div>
+          <div class="flex gap-2 flex-shrink-0">
+            <a href="/api/report" target="_blank" rel="noopener" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white border border-teal-200 text-teal-700 hover:bg-teal-50">
+              <i class="fa-solid fa-eye text-[11px]"></i> View
+            </a>
+            <a href="/api/download/report" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-teal-500 hover:bg-teal-400 text-white">
+              <i class="fa-solid fa-download text-[11px]"></i> Download HTML / PDF
+            </a>
+          </div>
+        </div>
+        <p class="text-[11px] text-gray-400 mt-1.5">Click <strong>View</strong>, then use your browser's <em>Print → Save as PDF</em> to export.</p>
+      </div>
+    </div>`;
+}
 
 // ── Inline Email Drafts ────────────────────────────────────────────────────
 function renderEmailDrafts(drafts) {
