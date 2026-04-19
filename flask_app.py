@@ -2649,19 +2649,77 @@ def _filter_candidate_url(target: str) -> str:
         return ""
 
 
+def _discover_website_via_requests(query: str) -> str:
+    """Quick, no-browser website discovery via Brave Search and DuckDuckGo HTML.
+    Returns "" if blocked. Used as a fast first attempt before Playwright."""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+    }
+    from urllib.parse import unquote as _unquote
+
+    # 1) Brave Search HTML — usually returns real results to scrapers
+    try:
+        r = requests.get(
+            "https://search.brave.com/search",
+            params={"q": query, "source": "web"},
+            headers=headers, timeout=10,
+        )
+        if r.status_code == 200:
+            for raw in re.findall(r'<a [^>]*href="(https?://[^"]+)"[^>]*class="[^"]*result-header', r.text):
+                site = _filter_candidate_url(raw)
+                if site:
+                    return site
+            for raw in re.findall(r'<a [^>]*class="[^"]*result-header[^"]*"[^>]*href="(https?://[^"]+)"', r.text):
+                site = _filter_candidate_url(raw)
+                if site:
+                    return site
+    except Exception:
+        pass
+
+    # 2) DuckDuckGo lite (often works when html.duckduckgo doesn't)
+    try:
+        r = requests.get(
+            "https://lite.duckduckgo.com/lite/",
+            params={"q": query},
+            headers=headers, timeout=10,
+        )
+        if r.status_code == 200:
+            for raw in re.findall(r'<a [^>]*href="(https?://[^"]+)"', r.text):
+                if "duckduckgo.com" in raw:
+                    continue
+                site = _filter_candidate_url(raw)
+                if site:
+                    return site
+    except Exception:
+        pass
+
+    return ""
+
+
 def _discover_website_via_search(business_name: str, city: str = "", state: str = "") -> str:
-    """Best-effort website discovery via a real headless browser search.
-    Returns a normalized URL or empty string. Skips directory/social domains.
-    Uses Playwright (already required for Sunbiz/Maps) so search engines don't
-    block us as easily as plain `requests`."""
+    """Best-effort website discovery. Tries fast `requests`-based search first
+    (Brave / DDG lite), then falls back to a Playwright-driven Google search.
+    Returns a normalized URL or empty string; skips directory/social domains."""
     if not business_name:
         return ""
-    from playwright.sync_api import sync_playwright
 
     parts = [business_name]
     if city:  parts.append(city)
     if state: parts.append(state)
     query = " ".join(parts) + " official site"
+
+    # Fast path: no headless browser
+    fast = _discover_website_via_requests(query)
+    if fast:
+        return fast
+
+    # Slow path: full Google search via Playwright
+    from playwright.sync_api import sync_playwright
 
     try:
         with sync_playwright() as pw:
@@ -3317,13 +3375,26 @@ def enrich_leads_batch(leads=None):
 
         return result
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {executor.submit(_enrich_one, lead): i for i, lead in enumerate(leads)}
-        for future in concurrent.futures.as_completed(futures):
+    # Each lead launches several Playwright browsers (Maps + maybe website search +
+    # Sunbiz). On low-memory hosts (e.g. Render free) running these in parallel
+    # OOM-kills Chromium silently and every Maps result returns blank. Run
+    # sequentially in production, parallel only when explicitly enabled.
+    parallel = os.environ.get("ENRICH_PARALLEL", "1") == "1" and not os.environ.get("RENDER")
+    if parallel:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {executor.submit(_enrich_one, lead): i for i, lead in enumerate(leads)}
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    enriched.append(future.result())
+                except Exception as e:
+                    _elog.warning("[enrich] worker failed: %s", e)
+    else:
+        for lead in leads:
             try:
-                enriched.append(future.result())
+                enriched.append(_enrich_one(lead))
             except Exception as e:
-                _elog.warning("[enrich] worker failed: %s", e)
+                _elog.warning("[enrich] sequential worker failed: %s", e)
+                enriched.append(lead)
 
     enriched.sort(key=lambda x: x.get("trade_name", ""))
 
