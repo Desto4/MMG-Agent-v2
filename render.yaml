@@ -15,6 +15,10 @@ services:
         value: /opt/render/project/.browsers
       - key: GOOGLE_PLACES_API_KEY
         sync: false
+      # Optional: route Playwright + requests through a residential/datacenter proxy
+      # to bypass Google's blocks on cloud IPs. Format: http://user:pass@host:port
+      - key: OUTBOUND_PROXY_URL
+        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: APOLLO_API_KEY

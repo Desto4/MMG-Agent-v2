@@ -2421,6 +2421,39 @@ def _google_places_lookup(business_name: str, city: str = "", state: str = "", a
     return out
 
 
+def _outbound_proxy_url() -> str:
+    """Optional outbound proxy URL for Playwright + requests.
+    Set OUTBOUND_PROXY_URL (e.g. http://user:pass@proxy.example.com:8080) on hosts where
+    Google blocks direct datacenter IPs (Render, Fly, etc.). Returns "" if not configured."""
+    return (os.environ.get("OUTBOUND_PROXY_URL") or "").strip()
+
+
+def _proxy_dict_for_requests():
+    """`requests`-style proxy dict, or None."""
+    p = _outbound_proxy_url()
+    if not p:
+        return None
+    return {"http": p, "https": p}
+
+
+def _proxy_for_playwright():
+    """Playwright proxy kwarg, or None. Parses optional user:pass@host:port form."""
+    p = _outbound_proxy_url()
+    if not p:
+        return None
+    from urllib.parse import urlparse
+    try:
+        u = urlparse(p)
+        cfg = {"server": f"{u.scheme}://{u.hostname}:{u.port}" if u.port else f"{u.scheme}://{u.hostname}"}
+        if u.username:
+            cfg["username"] = u.username
+        if u.password:
+            cfg["password"] = u.password
+        return cfg
+    except Exception:
+        return {"server": p}
+
+
 def _maps_search_url(query: str) -> str:
     # hl=en&gl=us forces English UI so our selectors and aria-labels match.
     return f"https://www.google.com/maps/search/{quote_plus(query)}?hl=en&gl=us"
@@ -2518,7 +2551,7 @@ def get_google_reviews(business_name, city="", state="", address_hint=""):
         nonlocal rating, count, website, address, phone, html
         try:
             with sync_playwright() as pw:
-                browser = pw.chromium.launch(
+                launch_kwargs = dict(
                     headless=True,
                     args=[
                         "--no-sandbox",
@@ -2527,6 +2560,10 @@ def get_google_reviews(business_name, city="", state="", address_hint=""):
                         "--disable-blink-features=AutomationControlled",
                     ],
                 )
+                proxy_cfg = _proxy_for_playwright()
+                if proxy_cfg:
+                    launch_kwargs["proxy"] = proxy_cfg
+                browser = pw.chromium.launch(**launch_kwargs)
                 context = browser.new_context(
                     user_agent=(
                         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -2764,13 +2801,14 @@ def _discover_website_via_requests(query: str) -> str:
         "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
     }
     from urllib.parse import unquote as _unquote
+    proxies = _proxy_dict_for_requests()
 
     # 1) Brave Search HTML — usually returns real results to scrapers
     try:
         r = requests.get(
             "https://search.brave.com/search",
             params={"q": query, "source": "web"},
-            headers=headers, timeout=10,
+            headers=headers, timeout=10, proxies=proxies,
         )
         if r.status_code == 200:
             for raw in re.findall(r'<a [^>]*href="(https?://[^"]+)"[^>]*class="[^"]*result-header', r.text):
@@ -2789,7 +2827,7 @@ def _discover_website_via_requests(query: str) -> str:
         r = requests.get(
             "https://lite.duckduckgo.com/lite/",
             params={"q": query},
-            headers=headers, timeout=10,
+            headers=headers, timeout=10, proxies=proxies,
         )
         if r.status_code == 200:
             for raw in re.findall(r'<a [^>]*href="(https?://[^"]+)"', r.text):
@@ -2826,7 +2864,8 @@ def _discover_website_via_search(business_name: str, city: str = "", state: str 
 
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(
+            _slow_proxy = _proxy_for_playwright()
+            _slow_kwargs = dict(
                 headless=True,
                 args=[
                     "--no-sandbox",
@@ -2835,6 +2874,9 @@ def _discover_website_via_search(business_name: str, city: str = "", state: str 
                     "--disable-blink-features=AutomationControlled",
                 ],
             )
+            if _slow_proxy:
+                _slow_kwargs["proxy"] = _slow_proxy
+            browser = pw.chromium.launch(**_slow_kwargs)
             context = browser.new_context(
                 user_agent=(
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -3970,6 +4012,125 @@ def add_cors(response):
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/api/diagnose")
+def diagnose_enrichment():
+    """
+    Run a quick end-to-end check of every enrichment source so you can see
+    exactly what's broken on Render vs local. No secrets are returned.
+
+    Optional query params:
+      ?biz=Joes+Stone+Crab&city=Miami+Beach&state=FL  (override the test target)
+    """
+    biz   = (request.args.get("biz")   or "Joe's Stone Crab").strip()
+    city  = (request.args.get("city")  or "Miami Beach").strip()
+    state = (request.args.get("state") or "FL").strip()
+
+    out = {
+        "test_business": f"{biz} ({city}, {state})",
+        "host": {
+            "render":             bool(os.environ.get("RENDER")),
+            "playwright_browsers_path": os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "",
+            "outbound_proxy":     bool(_outbound_proxy_url()),
+            "google_places_key":  bool(
+                (os.getenv("GOOGLE_PLACES_API_KEY") or os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
+            ),
+            "apollo_key":         bool(os.getenv("APOLLO_API_KEY", "").strip()),
+            "hunter_key":         bool(os.getenv("HUNTER_API_KEY", "").strip()),
+        },
+        "checks": {},
+    }
+
+    # 1) Outbound IP (helpful: tells you what Google sees)
+    try:
+        r = requests.get("https://api.ipify.org?format=json", timeout=8,
+                         proxies=_proxy_dict_for_requests())
+        out["host"]["egress_ip"] = (r.json() or {}).get("ip", "")
+    except Exception as e:
+        out["host"]["egress_ip_error"] = str(e)
+
+    # 2) Playwright launch test
+    try:
+        from playwright.sync_api import sync_playwright
+        import time as _t
+        t0 = _t.time()
+        with sync_playwright() as pw:
+            launch_kwargs = dict(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                      "--disable-blink-features=AutomationControlled"],
+            )
+            proxy_cfg = _proxy_for_playwright()
+            if proxy_cfg:
+                launch_kwargs["proxy"] = proxy_cfg
+            browser = pw.chromium.launch(**launch_kwargs)
+            ctx = browser.new_context(
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1366, "height": 900}, locale="en-US",
+            )
+            page = ctx.new_page()
+            page.goto("https://www.google.com/search?q=hello", wait_until="domcontentloaded", timeout=20000)
+            url = page.url
+            html_len = len(page.content())
+            browser.close()
+        out["checks"]["playwright_google"] = {
+            "ok":           True,
+            "final_url":    url,
+            "consent_wall": "consent.google.com" in url,
+            "html_length":  html_len,
+            "ms":           int((_t.time() - t0) * 1000),
+        }
+    except Exception as e:
+        out["checks"]["playwright_google"] = {"ok": False, "error": str(e)}
+
+    # 3) Google Places API
+    try:
+        pl = _google_places_lookup(biz, city, state)
+        out["checks"]["google_places_api"] = {
+            "configured": bool((os.getenv("GOOGLE_PLACES_API_KEY") or os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()),
+            "rating":     pl.get("google_rating", ""),
+            "reviews":    pl.get("google_review_count", ""),
+            "website":    pl.get("website", ""),
+            "phone":      pl.get("business_phone", ""),
+            "error":      pl.get("_error", ""),
+        }
+    except Exception as e:
+        out["checks"]["google_places_api"] = {"ok": False, "error": str(e)}
+
+    # 4) Headless Maps scrape
+    try:
+        gr = get_google_reviews(biz, city, state)
+        out["checks"]["headless_maps"] = {
+            "rating":  gr.get("google_rating", ""),
+            "reviews": gr.get("google_review_count", ""),
+            "website": gr.get("website", ""),
+            "phone":   gr.get("business_phone", ""),
+        }
+    except Exception as e:
+        out["checks"]["headless_maps"] = {"ok": False, "error": str(e)}
+
+    # 5) Sunbiz (different host, different blocking pattern)
+    try:
+        sb = sunbiz_lookup(biz)
+        out["checks"]["sunbiz"] = {
+            "found":       bool(sb.get("found")),
+            "entity_name": sb.get("entity_name", ""),
+            "status":      sb.get("sunbiz_status", ""),
+            "error":       sb.get("error", ""),
+        }
+    except Exception as e:
+        out["checks"]["sunbiz"] = {"ok": False, "error": str(e)}
+
+    # 6) Search-engine website discovery
+    try:
+        site = _discover_website_via_requests(f"{biz} {city} {state} official site")
+        out["checks"]["website_search_requests"] = {"website": site}
+    except Exception as e:
+        out["checks"]["website_search_requests"] = {"ok": False, "error": str(e)}
+
+    return jsonify(out)
 
 
 @app.route("/api/config", methods=["GET"])
