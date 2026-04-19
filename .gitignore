@@ -1,13 +1,18 @@
 # Python
+.venv/
+venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
 .env
+.local_api_keys.json
 
 # App outputs
 leads.csv
 outreach_drafts.csv
 flask.log
+*.duckdb
+*.xlsx
 
 # Claude Code internal
 .claude/

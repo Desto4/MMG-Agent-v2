@@ -108,9 +108,9 @@
         </div>
 
         <div class="p-4 border-t border-gray-800 flex items-center cursor-pointer hover:bg-gray-800 transition-colors" onclick="toggleSettings()">
-            <div class="bg-teal-900 text-teal-400 rounded-full h-8 w-8 flex items-center justify-center font-bold text-xs mr-3">JD</div>
+            <div class="bg-teal-900 text-teal-400 rounded-full h-8 w-8 flex items-center justify-center font-bold text-xs mr-3">GN</div>
             <div class="flex-1">
-                <p class="text-white text-sm font-medium">James Deal</p>
+                <p class="text-white text-sm font-medium">Gabriel Navarro</p>
                 <p class="text-xs">Broker</p>
             </div>
             <i class="fa-solid fa-chevron-down text-xs"></i>
@@ -187,30 +187,67 @@
                     <span class="text-sm font-medium text-teal-600">Live</span>
                 </div>
             </header>
-            <div id="chat-messages" class="flex-1 overflow-y-auto p-8 pb-32">
-                <div class="max-w-4xl mx-auto space-y-6" id="messages-container"></div>
+            <!-- Chat messages (hidden when empty, shown after first message) -->
+            <div id="chat-messages" class="flex-1 overflow-y-auto px-8 pt-6 pb-36 hidden">
+                <div class="max-w-3xl mx-auto space-y-6" id="messages-container"></div>
             </div>
+
+            <!-- Empty / hero state (shown until first message) -->
+            <div id="chat-empty-state" class="flex-1 flex flex-col items-center justify-center px-8 pb-48">
+                <!-- Logo mark -->
+                <div class="w-12 h-12 rounded-xl bg-gray-900 flex items-center justify-center mb-6 shadow-sm">
+                    <i class="fa-solid fa-building text-white text-lg"></i>
+                </div>
+                <!-- Headline -->
+                <h1 class="text-4xl font-bold text-gray-900 mb-3 text-center">Find your next tenant.</h1>
+                <p class="text-gray-400 text-base mb-10 text-center">Florida CRE tenant intelligence, on demand.</p>
+                <!-- Suggestion chips -->
+                <div class="flex flex-wrap gap-3 justify-center max-w-xl">
+                    <button onclick="submitSuggestion('Show me nail salons in Miami-Dade')"
+                        class="flex items-center gap-2 px-4 py-2 rounded-full border border-gray-200 bg-white text-sm text-gray-600 hover:border-teal-400 hover:text-teal-600 hover:bg-teal-50 transition-all shadow-sm">
+                        <i class="fa-solid fa-scissors text-teal-500 text-xs"></i>
+                        Nail salons — Miami-Dade
+                    </button>
+                    <button onclick="submitSuggestion('Show me hair salons in Broward')"
+                        class="flex items-center gap-2 px-4 py-2 rounded-full border border-gray-200 bg-white text-sm text-gray-600 hover:border-teal-400 hover:text-teal-600 hover:bg-teal-50 transition-all shadow-sm">
+                        <i class="fa-solid fa-star text-teal-500 text-xs"></i>
+                        Hair salons — Broward
+                    </button>
+                    <button onclick="submitSuggestion('Show me barbers in Miami-Dade')"
+                        class="flex items-center gap-2 px-4 py-2 rounded-full border border-gray-200 bg-white text-sm text-gray-600 hover:border-teal-400 hover:text-teal-600 hover:bg-teal-50 transition-all shadow-sm">
+                        <i class="fa-solid fa-user text-teal-500 text-xs"></i>
+                        Barbers — Miami-Dade
+                    </button>
+                    <button onclick="submitSuggestion('Show me barbers in Broward')"
+                        class="flex items-center gap-2 px-4 py-2 rounded-full border border-gray-200 bg-white text-sm text-gray-600 hover:border-teal-400 hover:text-teal-600 hover:bg-teal-50 transition-all shadow-sm">
+                        <i class="fa-solid fa-map-location-dot text-teal-500 text-xs"></i>
+                        Barbers — Broward
+                    </button>
+                </div>
+            </div>
+
             <!-- Floating input bar -->
             <div class="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-10 pb-6 px-8 z-20">
-                <div class="max-w-4xl mx-auto">
-                    <p id="gabe-prompt" class="text-center text-lg font-semibold text-gray-600 mb-3">Hey Gabe, what kind of businesses are you looking for today?</p>
-                    <div class="relative">
+                <div class="max-w-3xl mx-auto">
+                    <div class="relative bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden focus-within:ring-2 focus-within:ring-teal-400 focus-within:border-transparent">
                         <input id="chat-input" type="text"
-                            placeholder="Ask me to find leads, load to HubSpot, draft emails…"
-                            class="w-full pl-6 pr-14 py-4 bg-white border border-gray-200 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-700 disabled:opacity-50"
+                            placeholder="Ask anything — find leads, enrich contacts, push to HubSpot…"
+                            class="w-full pl-6 pr-14 py-4 bg-transparent focus:outline-none text-gray-700 disabled:opacity-50 text-sm"
                             onkeydown="if(event.key==='Enter') sendMessage()">
                         <!-- Send button (shown when idle) -->
                         <button id="send-btn" onclick="sendMessage()"
-                            class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-gray-100 hover:bg-gray-200 text-gray-500 p-2 rounded-lg transition-colors disabled:opacity-40">
-                            <i class="fa-solid fa-arrow-up"></i>
+                            class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-gray-900 hover:bg-gray-700 text-white p-2 rounded-xl transition-colors">
+                            <i class="fa-solid fa-arrow-up text-sm"></i>
                         </button>
                         <!-- Stop button (shown while streaming) -->
                         <button id="stop-btn" onclick="stopStreaming()"
-                            class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-red-100 hover:bg-red-200 text-red-600 p-2 rounded-lg transition-colors hidden"
+                            class="absolute right-3 top-1/2 transform -translate-y-1/2 bg-red-100 hover:bg-red-200 text-red-600 p-2 rounded-xl transition-colors hidden"
                             title="Stop generation">
-                            <i class="fa-solid fa-stop"></i>
+                            <i class="fa-solid fa-stop text-sm"></i>
                         </button>
                     </div>
+                    <!-- Sub-label -->
+                    <p class="text-center text-xs text-gray-300 mt-3">Local database · Florida business registry · Apollo · HubSpot</p>
                 </div>
             </div>
         </div>
@@ -299,14 +336,18 @@
             </div>
         </div>
 
-        <!-- SETTINGS MODAL -->
-        <div id="settings-modal" class="hidden fixed inset-0 bg-black/40 z-50 flex items-center justify-center">
-            <div class="bg-white rounded-2xl shadow-xl w-full max-w-md p-8">
-                <div class="flex items-center justify-between mb-6">
+        <!-- SETTINGS MODAL (scroll body; Save/Cancel stay visible at bottom) -->
+        <div id="settings-modal" class="hidden fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[min(90vh,720px)] flex flex-col min-h-0 overflow-hidden">
+                <div class="flex items-center justify-between gap-3 px-6 pt-6 pb-3 flex-shrink-0 border-b border-gray-100">
                     <h2 class="font-semibold text-gray-900 text-lg">API Configuration</h2>
-                    <button onclick="toggleSettings()" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+                    <div class="flex items-center gap-2 flex-shrink-0">
+                        <button type="button" onclick="saveConfig()" class="bg-teal-500 hover:bg-teal-400 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm">Save</button>
+                        <button type="button" onclick="toggleSettings()" class="text-gray-400 hover:text-gray-600 text-xl leading-none px-1" aria-label="Close">&times;</button>
+                    </div>
                 </div>
-                <div class="space-y-4">
+                <!-- min-h-0 is required: without it, flex-1 children grow and push the footer off-screen -->
+                <div class="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 py-4 space-y-4">
 
                     <!-- AI Model Provider -->
                     <div class="bg-gray-50 rounded-xl p-4 space-y-3">
@@ -378,6 +419,7 @@
                     <!-- Data connectors -->
                     <div class="bg-gray-50 rounded-xl p-4 space-y-3">
                         <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Data Connectors</p>
+                        <p class="text-xs text-gray-400">Keys are saved on this machine in <code class="text-[11px] bg-gray-100 px-1 rounded">.local_api_keys.json</code> next to <code class="text-[11px] bg-gray-100 px-1 rounded">flask_app.py</code> (not committed to git). Leave a field blank to keep the previous value.</p>
                         <div>
                             <label class="block text-xs text-gray-500 mb-1">Apollo API Key</label>
                             <input id="input-apollo" type="password" placeholder="Apollo key..."
@@ -392,6 +434,17 @@
                             <label class="block text-xs text-gray-500 mb-1">HubSpot Token</label>
                             <input id="input-hubspot" type="password" placeholder="pat-na1-..."
                                 class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+                        </div>
+                    </div>
+
+                    <!-- Business Leads Database -->
+                    <div class="bg-gray-50 rounded-xl p-4 space-y-3">
+                        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Business Leads Database</p>
+                        <p class="text-xs text-gray-400">Absolute path to your Excel file of businesses (Miami-Dade &amp; Broward). The agent queries this first before searching Maps.</p>
+                        <div>
+                            <label class="block text-xs text-gray-500 mb-1">Excel File Path</label>
+                            <input id="input-crm-path" type="text" placeholder="/Users/jorge/Downloads/MMG_Tenant_CRM.xlsx"
+                                class="w-full border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 font-mono">
                         </div>
                     </div>
 
@@ -411,10 +464,10 @@
                         </div>
                     </div>
                 </div>
-                <div id="config-msg" class="hidden mt-3 text-sm text-teal-600 font-medium"></div>
-                <div class="flex gap-3 mt-6">
-                    <button onclick="saveConfig()" class="flex-1 bg-teal-500 hover:bg-teal-400 text-white font-medium py-2 rounded-lg text-sm transition-colors">Save</button>
-                    <button onclick="toggleSettings()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-600 font-medium py-2 rounded-lg text-sm transition-colors">Cancel</button>
+                <div id="config-msg" class="hidden px-6 pb-1 text-sm text-teal-600 font-medium flex-shrink-0"></div>
+                <div class="flex gap-3 px-6 py-3 flex-shrink-0 border-t border-gray-100 bg-gray-50/80">
+                    <button type="button" onclick="saveConfig()" class="flex-1 bg-teal-500 hover:bg-teal-400 text-white font-medium py-2.5 rounded-lg text-sm transition-colors shadow-sm">Save settings</button>
+                    <button type="button" onclick="toggleSettings()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-600 font-medium py-2.5 rounded-lg text-sm transition-colors">Cancel</button>
                 </div>
             </div>
         </div>
@@ -525,9 +578,11 @@ function newTask() {
     document.getElementById('session-title').textContent = 'Agent Session';
     // Clear backend leads store so old leads don't carry over
     fetch('/api/clear_leads', { method: 'POST' }).catch(() => {});
-    // Show the prompt text again for the new task
-    const gabePrompt = document.getElementById('gabe-prompt');
-    if (gabePrompt) gabePrompt.classList.remove('hidden');
+    // Show empty/hero state again for the new task
+    const emptyState = document.getElementById('chat-empty-state');
+    const chatMessages = document.getElementById('chat-messages');
+    if (emptyState) emptyState.classList.remove('hidden');
+    if (chatMessages) chatMessages.classList.add('hidden');
     renderTasks();
     showPage('session');
     document.getElementById('chat-input').focus();
@@ -631,10 +686,12 @@ function appendToolChip(name, done) {
     const container = document.getElementById('messages-container');
     const icons = {
         apollo_search_people:   '🔍',
+        apollo_enrich_existing_leads: '✨',
         hubspot_create_contact: '📥',
         web_search:             '🌐',
         save_outreach_csv:      '💾',
-        save_leads_csv:         '💾'
+        save_leads_csv:         '💾',
+        save_research_report:   '📄'
     };
     const icon = icons[name] || '⚙️';
     const label = name.replace(/_/g, ' ');
@@ -660,6 +717,12 @@ function appendToolChipStatic(name, done) {
 }
 
 // ── Chat send ──────────────────────────────────────────────────────────────
+function submitSuggestion(text) {
+    const input = document.getElementById('chat-input');
+    input.value = text;
+    sendMessage();
+}
+
 async function sendMessage(prefill) {
     if (isStreaming) return;
     const input = document.getElementById('chat-input');
@@ -678,9 +741,13 @@ async function sendMessage(prefill) {
         renderTasks();
     }
 
-    // Hide the prompt text after first message
-    const gabePrompt = document.getElementById('gabe-prompt');
-    if (gabePrompt) gabePrompt.classList.add('hidden');
+    // Hide empty/hero state and show chat messages on first send
+    const emptyState = document.getElementById('chat-empty-state');
+    const chatMessages = document.getElementById('chat-messages');
+    if (emptyState && !emptyState.classList.contains('hidden')) {
+        emptyState.classList.add('hidden');
+        chatMessages.classList.remove('hidden');
+    }
 
     appendUserBubble(message);
     if (task) task.messages.push({role: 'user', content: message});
@@ -758,7 +825,7 @@ async function sendMessage(prefill) {
                     }
 
                     // Render table after enrichment, Apollo, or get_collected_leads
-                    const leadsResult = ['apollo_search_people','enrich_leads_batch','get_collected_leads']
+                    const leadsResult = ['apollo_search_people','apollo_enrich_existing_leads','enrich_leads_batch','get_collected_leads','query_tenant_crm']
                         .includes(evt.name) && evt.result?.leads?.length ? evt.result.leads : null;
                     if (leadsResult) {
                         const tableDiv = document.createElement('div');
@@ -770,6 +837,17 @@ async function sendMessage(prefill) {
                             task.outputs = task.outputs.filter(o => !o.includes('prospect'));
                             task.outputs.push(`${leadsResult.length} prospects`);
                             task.messages.push({role: 'leads_table', leads: leadsResult});
+                            renderTasks();
+                        }
+                    }
+                    if (evt.name === 'save_research_report' && evt.result?.success) {
+                        const reportDiv = document.createElement('div');
+                        reportDiv.innerHTML = renderResearchReportCard(evt.result);
+                        document.getElementById('messages-container').appendChild(reportDiv.firstElementChild);
+                        scrollToBottom();
+                        if (task) {
+                            task.outputs = task.outputs.filter(o => !o.includes('research report'));
+                            task.outputs.push('research report');
                             renderTasks();
                         }
                     }
@@ -834,9 +912,9 @@ async function sendMessage(prefill) {
 
 function getToolIcon(name) {
     const icons = {
-        apollo_search_people: '🔍', hubspot_create_contact: '📥',
+        apollo_search_people: '🔍', apollo_enrich_existing_leads: '✨', hubspot_create_contact: '📥',
         upload_leads_to_hubspot: '📥', get_collected_leads: '📋',
-        web_search: '🌐', save_outreach_csv: '💾', save_leads_csv: '💾',
+        web_search: '🌐', save_outreach_csv: '💾', save_leads_csv: '💾', save_research_report: '📄',
         enrich_leads_batch: '⚡', sunbiz_lookup: '🏛', scrape_website_contact: '🌐',
         get_google_reviews: '⭐', search_businesses_maps: '🗺️',
         send_gmail_email: '📤', create_gmail_drafts: '📧'
@@ -1115,6 +1193,13 @@ async function loadConnectors() {
                 configured: config.gmail,
                 action: 'settings',
             },
+            {
+                key: 'crm', name: 'Business Leads DB',
+                icon: 'fa-solid fa-table', color: 'text-green-600',
+                desc: 'Local Excel database of Miami-Dade & Broward businesses. Agent queries this first for any lead request.',
+                configured: config.crm,
+                action: 'settings',
+            },
         ];
 
         grid.innerHTML = connectors.map(c => {
@@ -1206,9 +1291,10 @@ async function saveConfig() {
         model_provider:      currentProvider,
         gmail_address:      document.getElementById('input-gmail-address').value.trim(),
         gmail_app_password: document.getElementById('input-gmail-app-password').value.trim(),
+        crm_path:           document.getElementById('input-crm-path').value.trim(),
     };
 
-    const anyFilled = body.anthropic_key || body.apollo_key || body.hubspot_token || body.gemini_key || body.perplexity_key || body.model_provider;
+    const anyFilled = body.anthropic_key || body.apollo_key || body.hubspot_token || body.gemini_key || body.perplexity_key || body.model_provider || body.crm_path;
     if (!anyFilled) {
         const msg = document.getElementById('config-msg');
         msg.textContent = 'Please enter at least one key.';
@@ -1218,18 +1304,18 @@ async function saveConfig() {
     }
 
     try {
-        await fetch('/api/config', {
+        const resp = await fetch('/api/config', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(body)
         });
-        // Clear sensitive inputs
-        document.getElementById('input-anthropic').value        = '';
-        document.getElementById('input-apollo').value           = '';
-        document.getElementById('input-hunter').value          = '';
-        document.getElementById('input-hubspot').value          = '';
-        document.getElementById('input-gemini').value           = '';
-        document.getElementById('input-perplexity').value       = '';
+        const out = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            toast(`Could not save settings (${resp.status}). ${out.error || ''}`.trim());
+            return;
+        }
+        // Do not clear API key fields: empty submit would look like "remove key" and confused users.
+        // Keys are stored server-side in .local_api_keys.json (see flask_app.py).
         document.getElementById('input-gmail-address').value      = '';
         document.getElementById('input-gmail-app-password').value = '';
 
@@ -1263,6 +1349,28 @@ function fmtMs(ms) {
 }
 function fmtNum(n) { return Number(n).toLocaleString(); }
 function fmtCost(c) { return c < 0.0001 ? '<$0.0001' : '$'+Number(c).toFixed(4); }
+
+// ── Inline Research Report card ────────────────────────────────────────────
+function renderResearchReportCard(result) {
+    const title = (result.title || 'Research Report').replace(/"/g, '&quot;');
+    return `
+    <div class="flex items-start space-x-4 my-3">
+      <div class="w-8 flex-shrink-0"></div>
+      <div class="flex-1">
+        <div class="border border-teal-200 bg-teal-50/40 rounded-xl p-4 flex items-center justify-between gap-4">
+          <div class="min-w-0">
+            <p class="text-xs font-semibold text-teal-700 uppercase tracking-wide mb-1">Research Report</p>
+            <p class="text-sm font-medium text-gray-900 truncate">${title}</p>
+          </div>
+          <div class="flex-shrink-0">
+            <a href="/api/download/report" class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium bg-teal-500 hover:bg-teal-400 text-white">
+              <i class="fa-solid fa-file-pdf text-[11px]"></i> Download PDF
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
 
 // ── Inline Email Drafts ────────────────────────────────────────────────────
 function renderEmailDrafts(drafts) {
