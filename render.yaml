@@ -13,8 +13,8 @@ services:
     envVars:
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: /opt/render/project/.browsers
-      - key: RENDER
-        value: "1"
+      - key: GOOGLE_PLACES_API_KEY
+        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: APOLLO_API_KEY

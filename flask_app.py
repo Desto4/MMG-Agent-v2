@@ -2346,6 +2346,81 @@ def _hunter_domain_search(domain):
         return ""
 
 
+def _google_places_lookup(business_name: str, city: str = "", state: str = "", address: str = ""):
+    """
+    Official Google Places API (Text Search + Place Details). Works from cloud hosts
+    (Render, etc.) where headless Maps scraping is often blocked or captcha'd.
+    Set GOOGLE_PLACES_API_KEY or GOOGLE_MAPS_API_KEY in the environment (same key works
+    if Places API is enabled in Google Cloud Console).
+    """
+    key = (os.environ.get("GOOGLE_PLACES_API_KEY") or os.environ.get("GOOGLE_MAPS_API_KEY") or "").strip()
+    if not key or not (business_name or "").strip():
+        return {}
+    parts = [(business_name or "").strip()]
+    if (address or "").strip():
+        parts.append(address.strip())
+    else:
+        if city:  parts.append(city)
+        if state: parts.append(state)
+    query = ", ".join(p for p in parts if p) if address else " ".join(p for p in parts if p)
+    if not query:
+        return {}
+    out = {
+        "google_rating":       "",
+        "google_review_count": "",
+        "website":             "",
+        "address":             "",
+        "business_phone":      "",
+    }
+    try:
+        r = requests.get(
+            "https://maps.googleapis.com/maps/api/place/textsearch/json",
+            params={"query": query, "key": key},
+            timeout=20,
+        )
+        data = r.json()
+        status = data.get("status", "")
+        if status not in ("OK", "ZERO_RESULTS"):
+            return {"_error": f"Places Text Search: {status}", **out}
+        results = data.get("results") or []
+        if not results:
+            return out
+        best = results[0]
+        place_id = best.get("place_id")
+        if best.get("rating") is not None:
+            out["google_rating"] = str(best["rating"])
+        if best.get("user_ratings_total") is not None:
+            out["google_review_count"] = str(best["user_ratings_total"])
+        out["address"] = (best.get("formatted_address") or "").strip()
+
+        if place_id:
+            r2 = requests.get(
+                "https://maps.googleapis.com/maps/api/place/details/json",
+                params={
+                    "place_id": place_id,
+                    "fields": "website,formatted_phone_number,international_phone_number,rating,user_ratings_total",
+                    "key":    key,
+                },
+                timeout=20,
+            )
+            d2 = r2.json()
+            if d2.get("status") == "OK":
+                res = d2.get("result") or {}
+                if res.get("rating") is not None:
+                    out["google_rating"] = str(res["rating"])
+                if res.get("user_ratings_total") is not None:
+                    out["google_review_count"] = str(res["user_ratings_total"])
+                w = (res.get("website") or "").strip()
+                if w:
+                    out["website"] = w.split("?")[0].rstrip("/")
+                ph = (res.get("formatted_phone_number") or res.get("international_phone_number") or "").strip()
+                if ph:
+                    out["business_phone"] = ph
+    except Exception as e:
+        return {"_error": str(e), **out}
+    return out
+
+
 def _maps_search_url(query: str) -> str:
     # hl=en&gl=us forces English UI so our selectors and aria-labels match.
     return f"https://www.google.com/maps/search/{quote_plus(query)}?hl=en&gl=us"
@@ -2377,17 +2452,16 @@ def _dismiss_google_consent(page):
     return False
 
 
-def get_google_reviews(business_name, city="", state=""):
+def get_google_reviews(business_name, city="", state="", address_hint=""):
     """
-    Open Google Maps for the business and extract:
-      - star rating + review count
-      - website URL (when listed in the panel)
-      - address + business phone (when present)
-    Handles the Google consent wall, tries multiple query variants, and
-    falls back to a Google Search website lookup if Maps yields nothing.
+    Rating, review count, website, address, phone from Google.
+
+    1) If GOOGLE_PLACES_API_KEY (or GOOGLE_MAPS_API_KEY) is set, use the official
+       Places API first — reliable on Render/cloud where headless Maps is often blocked.
+    2) Otherwise (or to fill gaps), use Playwright + maps.google.com as before.
     """
     from playwright.sync_api import sync_playwright
-    import time, logging as _logging
+    import logging as _logging
     log = _logging.getLogger(__name__)
 
     rating  = ""
@@ -2396,6 +2470,35 @@ def get_google_reviews(business_name, city="", state=""):
     address = ""
     phone   = ""
     html    = ""
+
+    # Official API path (recommended for production / Render)
+    places_key = (os.environ.get("GOOGLE_PLACES_API_KEY") or os.environ.get("GOOGLE_MAPS_API_KEY") or "").strip()
+    if places_key:
+        pl = _google_places_lookup(business_name, city, state, address=address_hint or "")
+        if pl.get("_error"):
+            log.warning("[maps] Places API: %s", pl["_error"])
+        for k in ("google_rating", "google_review_count", "website", "address", "business_phone"):
+            if pl.get(k):
+                if k == "google_rating":
+                    rating = pl[k]
+                elif k == "google_review_count":
+                    count = pl[k]
+                elif k == "website":
+                    website = pl[k]
+                elif k == "address":
+                    address = pl[k]
+                elif k == "business_phone":
+                    phone = pl[k]
+        # If we got rating + website from Places, skip headless Maps (often blocked on cloud IPs)
+        if rating and website:
+            return {
+                "google_rating":       rating,
+                "google_review_count": count,
+                "website":             website,
+                "address":             address,
+                "business_phone":      phone,
+            }
+        # Partial data: still try Playwright below for missing fields
 
     queries = []
     base = (business_name or "").strip()
@@ -3211,7 +3314,7 @@ def enrich_leads_batch(leads=None):
         #    even when the lead came in without a website URL.
         if not (result.get("google_rating") and result.get("google_review_count") and result.get("website")):
             try:
-                gr = get_google_reviews(name, city, state)
+                gr = get_google_reviews(name, city, state, address_hint=result.get("address") or "")
                 if gr.get("google_rating"):
                     result["google_rating"] = gr["google_rating"]
                     sources["google"] = True
@@ -3896,6 +3999,10 @@ def get_config():
         "env_file_path":   _DOTENV_LOADED_PATH or "",
         "python_dotenv_installed": _dotenv_ok,
         "flask_app_dir":   os.path.dirname(os.path.abspath(__file__)),
+        # True when Google Places API key is set — recommended on Render (Maps scraping often blocked)
+        "google_places":  bool(
+            (os.getenv("GOOGLE_PLACES_API_KEY") or os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
+        ),
     })
 
 
