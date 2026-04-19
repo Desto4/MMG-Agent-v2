@@ -2348,11 +2348,17 @@ def _hunter_domain_search(domain):
 
 def _google_places_lookup(business_name: str, city: str = "", state: str = "", address: str = ""):
     """
-    Official Google Places API (Text Search + Place Details). Works from cloud hosts
-    (Render, etc.) where headless Maps scraping is often blocked or captcha'd.
-    Set GOOGLE_PLACES_API_KEY or GOOGLE_MAPS_API_KEY in the environment (same key works
-    if Places API is enabled in Google Cloud Console).
+    Official Google Places API. Tries Places API (New) first — that's what
+    Google enables for new projects. Falls back to the legacy Places API
+    if the new one isn't enabled. Works from cloud hosts (Render, etc.)
+    where headless Maps scraping is blocked.
+
+    Set GOOGLE_PLACES_API_KEY or GOOGLE_MAPS_API_KEY (same key, either name).
+    Enable in Google Cloud Console: "Places API (New)" — and/or "Places API".
     """
+    import logging as _logging
+    log = _logging.getLogger(__name__)
+
     key = (os.environ.get("GOOGLE_PLACES_API_KEY") or os.environ.get("GOOGLE_MAPS_API_KEY") or "").strip()
     if not key or not (business_name or "").strip():
         return {}
@@ -2365,6 +2371,7 @@ def _google_places_lookup(business_name: str, city: str = "", state: str = "", a
     query = ", ".join(p for p in parts if p) if address else " ".join(p for p in parts if p)
     if not query:
         return {}
+
     out = {
         "google_rating":       "",
         "google_review_count": "",
@@ -2372,53 +2379,135 @@ def _google_places_lookup(business_name: str, city: str = "", state: str = "", a
         "address":             "",
         "business_phone":      "",
     }
+
+    # ── Strategy 1: Places API (New) — preferred ──────────────────────────
+    new_api_unavailable = False
     try:
-        r = requests.get(
-            "https://maps.googleapis.com/maps/api/place/textsearch/json",
-            params={"query": query, "key": key},
+        r = requests.post(
+            "https://places.googleapis.com/v1/places:searchText",
+            json={"textQuery": query, "maxResultCount": 5},
+            headers={
+                "Content-Type":     "application/json",
+                "X-Goog-Api-Key":   key,
+                "X-Goog-FieldMask": (
+                    "places.id,places.displayName,places.formattedAddress,places.rating,"
+                    "places.userRatingCount,places.websiteUri,places.nationalPhoneNumber,"
+                    "places.internationalPhoneNumber"
+                ),
+            },
             timeout=20,
         )
-        data = r.json()
-        status = data.get("status", "")
-        if status not in ("OK", "ZERO_RESULTS"):
-            return {"_error": f"Places Text Search: {status}", **out}
-        results = data.get("results") or []
-        if not results:
-            return out
-        best = results[0]
-        place_id = best.get("place_id")
-        if best.get("rating") is not None:
-            out["google_rating"] = str(best["rating"])
-        if best.get("user_ratings_total") is not None:
-            out["google_review_count"] = str(best["user_ratings_total"])
-        out["address"] = (best.get("formatted_address") or "").strip()
-
-        if place_id:
-            r2 = requests.get(
-                "https://maps.googleapis.com/maps/api/place/details/json",
-                params={
-                    "place_id": place_id,
-                    "fields": "website,formatted_phone_number,international_phone_number,rating,user_ratings_total",
-                    "key":    key,
-                },
-                timeout=20,
-            )
-            d2 = r2.json()
-            if d2.get("status") == "OK":
-                res = d2.get("result") or {}
-                if res.get("rating") is not None:
-                    out["google_rating"] = str(res["rating"])
-                if res.get("user_ratings_total") is not None:
-                    out["google_review_count"] = str(res["user_ratings_total"])
-                w = (res.get("website") or "").strip()
+        if r.status_code == 200:
+            data = r.json() or {}
+            places = data.get("places") or []
+            if places:
+                best = _pick_best_place_match(places, business_name)
+                if best.get("rating") is not None:
+                    out["google_rating"] = str(best["rating"])
+                if best.get("userRatingCount") is not None:
+                    out["google_review_count"] = str(best["userRatingCount"])
+                w = (best.get("websiteUri") or "").strip()
                 if w:
                     out["website"] = w.split("?")[0].rstrip("/")
-                ph = (res.get("formatted_phone_number") or res.get("international_phone_number") or "").strip()
+                addr = (best.get("formattedAddress") or "").strip()
+                if addr:
+                    out["address"] = addr
+                ph = (best.get("nationalPhoneNumber") or best.get("internationalPhoneNumber") or "").strip()
                 if ph:
                     out["business_phone"] = ph
+                return out
+            return out  # OK but zero results
+        else:
+            try:
+                err = (r.json() or {}).get("error", {})
+            except Exception:
+                err = {}
+            err_status = err.get("status", "")
+            err_msg    = err.get("message", "")
+            log.warning("[places-new] HTTP %s status=%s msg=%s", r.status_code, err_status, err_msg[:200])
+            # Detect "API not enabled" so we can fall back to the legacy endpoint cleanly
+            if r.status_code in (403, 404) or err_status in ("PERMISSION_DENIED", "FAILED_PRECONDITION"):
+                new_api_unavailable = True
+            else:
+                return {"_error": f"Places API (New) HTTP {r.status_code}: {err_status} {err_msg}", **out}
     except Exception as e:
-        return {"_error": str(e), **out}
+        log.warning("[places-new] exception: %s", e)
+        new_api_unavailable = True  # try legacy
+
+    # ── Strategy 2: Legacy Places API (Text Search + Details) ─────────────
+    if new_api_unavailable:
+        try:
+            r = requests.get(
+                "https://maps.googleapis.com/maps/api/place/textsearch/json",
+                params={"query": query, "key": key},
+                timeout=20,
+            )
+            data = r.json() if r.status_code == 200 else {}
+            status = data.get("status", f"HTTP {r.status_code}")
+            if status not in ("OK", "ZERO_RESULTS"):
+                msg = data.get("error_message", "")
+                return {"_error": f"Places (legacy) Text Search: {status} {msg}".strip(), **out}
+            results = data.get("results") or []
+            if not results:
+                return out
+            best = results[0]
+            place_id = best.get("place_id")
+            if best.get("rating") is not None:
+                out["google_rating"] = str(best["rating"])
+            if best.get("user_ratings_total") is not None:
+                out["google_review_count"] = str(best["user_ratings_total"])
+            out["address"] = (best.get("formatted_address") or "").strip()
+            if place_id:
+                r2 = requests.get(
+                    "https://maps.googleapis.com/maps/api/place/details/json",
+                    params={
+                        "place_id": place_id,
+                        "fields": "website,formatted_phone_number,international_phone_number,rating,user_ratings_total",
+                        "key":    key,
+                    },
+                    timeout=20,
+                )
+                d2 = r2.json() if r2.status_code == 200 else {}
+                if d2.get("status") == "OK":
+                    res = d2.get("result") or {}
+                    if res.get("rating") is not None:
+                        out["google_rating"] = str(res["rating"])
+                    if res.get("user_ratings_total") is not None:
+                        out["google_review_count"] = str(res["user_ratings_total"])
+                    w = (res.get("website") or "").strip()
+                    if w:
+                        out["website"] = w.split("?")[0].rstrip("/")
+                    ph = (res.get("formatted_phone_number") or res.get("international_phone_number") or "").strip()
+                    if ph:
+                        out["business_phone"] = ph
+        except Exception as e:
+            return {"_error": str(e), **out}
+
     return out
+
+
+def _pick_best_place_match(places: list, business_name: str) -> dict:
+    """Pick the place whose displayName best matches the queried business name."""
+    if not places:
+        return {}
+    if len(places) == 1:
+        return places[0]
+    target = (business_name or "").lower()
+    target_words = set(re.sub(r"[^a-z0-9\s]", "", target).split())
+    target_words -= {"the", "a", "an", "of", "and", "&", "llc", "inc", "corp", "co"}
+    best = places[0]
+    best_score = -1.0
+    for p in places:
+        cand = (p.get("displayName", {}).get("text") or "").lower()
+        cand_words = set(re.sub(r"[^a-z0-9\s]", "", cand).split())
+        score = len(target_words & cand_words)
+        # Bump score if rating exists (means it's a real, mappable business)
+        if p.get("rating") is not None:
+            score += 0.1
+        if score > best_score:
+            best_score = score
+            best = p
+    return best
 
 
 def _outbound_proxy_url() -> str:
