@@ -1,9 +1,41 @@
+databases:
+  - name: mmg-leads-db
+    plan: free
+    databaseName: mmg_leads
+    user: mmg
+
 services:
   - type: web
     name: mmg-agent
     runtime: python
     buildCommand: pip install -r requirements.txt && playwright install --with-deps chromium
-    startCommand: gunicorn flask_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --threads 4
+    startCommand: gunicorn flask_app:app --bind 0.0.0.0:$PORT --timeout 600 --graceful-timeout 60 --workers 1 --threads 4
     envVars:
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: /opt/render/project/.browsers
+      - key: GOOGLE_PLACES_API_KEY
+        sync: false
+      # Optional: route Playwright + requests through a residential/datacenter proxy
+      # to bypass Google's blocks on cloud IPs. Format: http://user:pass@host:port
+      - key: OUTBOUND_PROXY_URL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: APOLLO_API_KEY
+        sync: false
+      - key: HUBSPOT_TOKEN
+        sync: false
+      - key: HUNTER_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: PERPLEXITY_API_KEY
+        sync: false
+      - key: GMAIL_ADDRESS
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mmg-leads-db
+          property: connectionString
