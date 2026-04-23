@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+body {
+  font-family: 'Inter', sans-serif;
+  margin: 0;
+  min-height: 100vh;
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+.typing-cursor::after {
+  content: '|';
+  animation: blink 1s step-start infinite;
+  margin-left: 1px;
+  color: #14b8a6;
+}
+
+@keyframes pulse-bg {
+  0%,100%{ background-color: rgb(239 246 255); }
+  50%{ background-color: rgb(219 234 254); }
+}
+.tool-running { animation: pulse-bg 1.2s ease-in-out infinite; }
+
+/* Markdown (agent) */
+.agent-content h1, .agent-content h2, .agent-content h3 {
+  font-weight: 700; margin: 1rem 0 0.4rem; color: #111827;
+}
+.agent-content h1 { font-size: 1.15rem; }
+.agent-content h2 { font-size: 1.05rem; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.3rem; }
+.agent-content h3 { font-size: 0.95rem; }
+.agent-content p  { margin: 0.5rem 0; }
+.agent-content ul, .agent-content ol { padding-left: 1.4rem; margin: 0.5rem 0; }
+.agent-content li { margin: 0.25rem 0; }
+.agent-content strong { font-weight: 600; color: #111827; }
+.agent-content em { font-style: italic; }
+.agent-content code {
+  background: #f3f4f6; border-radius: 4px; padding: 0.1em 0.35em;
+  font-family: ui-monospace, monospace; font-size: 0.82em; color: #374151;
+}
+.agent-content pre {
+  background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px;
+  padding: 0.75rem 1rem; overflow-x: auto; margin: 0.75rem 0;
+}
+.agent-content pre code { background: none; padding: 0; font-size: 0.85em; }
+.agent-content hr { border: none; border-top: 1px solid #e5e7eb; margin: 1rem 0; }
+.agent-content blockquote {
+  border-left: 3px solid #14b8a6; padding-left: 0.75rem;
+  color: #6b7280; margin: 0.5rem 0;
+}
+.agent-content table {
+  width: 100%; border-collapse: collapse; margin: 0.75rem 0;
+  font-size: 0.82rem; border-radius: 8px; overflow: hidden;
+  border: 1px solid #e5e7eb;
+}
+.agent-content thead { background: #f9fafb; }
+.agent-content th {
+  padding: 0.5rem 0.75rem; text-align: left; font-weight: 600;
+  color: #6b7280; font-size: 0.75rem; text-transform: uppercase;
+  letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb;
+}
+.agent-content td {
+  padding: 0.5rem 0.75rem; border-bottom: 1px solid #f3f4f6;
+  color: #374151; vertical-align: top;
+}
+.agent-content tr:last-child td { border-bottom: none; }
+.agent-content tr:hover td { background: #f9fafb; }
