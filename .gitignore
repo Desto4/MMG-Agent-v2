@@ -17,5 +17,9 @@ flask.log
 # Claude Code internal
 .claude/
 
+# Node (React client)
+client/node_modules/
+client/dist/
+
 # macOS
 .DS_Store

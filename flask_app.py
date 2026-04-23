@@ -4107,7 +4107,18 @@ def add_cors(response):
 
 @app.route("/")
 def index():
+    # Prefer Vite + React build when present (run `cd client && npm run build` first).
+    if _react_build_ready():
+        return send_file(os.path.join(_REACT_DIST, "index.html"))
     return render_template("index.html")
+
+
+@app.route("/assets/<path:filename>")
+def react_vite_assets(filename):
+    d = os.path.join(_REACT_DIST, "assets")
+    if _react_build_ready() and os.path.isfile(os.path.join(d, filename)):
+        return send_from_directory(d, filename)
+    return ("Not found", 404)
 
 
 @app.route("/api/diagnose")
