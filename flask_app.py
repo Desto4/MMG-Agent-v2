@@ -3789,7 +3789,7 @@ def _run_agent_openai_compat(user_message: str, history: list,
     oai_tools = _tools_openai_fmt()
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for msg in history:
+    for msg in _compact_history(history):
         role    = msg.get("role")
         content = msg.get("content")
         if role in ("user", "assistant") and content:
@@ -3882,7 +3882,7 @@ def run_agent_perplexity(user_message, history, perplexity_key, model,
     client = _OAI(api_key=perplexity_key, base_url="https://api.perplexity.ai/")
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for msg in history:
+    for msg in _compact_history(history):
         role    = msg.get("role")
         content = msg.get("content")
         if role in ("user", "assistant") and content:
@@ -3924,7 +3924,7 @@ def run_agent_anthropic(user_message: str, history: list,
     MODEL  = model or "claude-opus-4-6"
 
     api_messages = []
-    for msg in history:
+    for msg in _compact_history(history):
         role    = msg.get("role")
         content = msg.get("content")
         if role in ("user", "assistant") and content:
@@ -3937,7 +3937,7 @@ def run_agent_anthropic(user_message: str, history: list,
     try:
         while True:
             response = client.messages.create(
-                model=MODEL, max_tokens=4096,
+                model=MODEL, max_tokens=_ANTHROPIC_MAX_TOKENS,
                 system=SYSTEM_PROMPT, tools=TOOLS,
                 messages=api_messages,
             )
@@ -3998,10 +3998,56 @@ _LEAD_KEYWORDS = {
     "leads", "businesses", "contacts",
 }
 
+
 def _message_wants_leads(msg: str) -> bool:
     """Return True if the message is asking for businesses/leads from the local DB."""
     low = msg.lower()
     return any(kw in low for kw in _LEAD_KEYWORDS)
+
+
+_RAG_PREFIX_TOP_K = 12
+_RAG_PREFIX_FIELD_MAX_CHARS = 80
+_RAG_PREFIX_TOTAL_CHAR_BUDGET = 2600
+_RAG_HISTORY_TURNS = 8
+_ANTHROPIC_MAX_TOKENS = 1400
+
+
+def _truncate_for_prompt(value, max_chars=_RAG_PREFIX_FIELD_MAX_CHARS):
+    s = str(value or "").strip()
+    if len(s) <= max_chars:
+        return s
+    return s[: max_chars - 1].rstrip() + "…"
+
+
+def _prioritized_rag_rows(rows, top_k=_RAG_PREFIX_TOP_K):
+    """Pick the highest-signal rows so context stays compact and useful."""
+    if not rows:
+        return []
+
+    def _score(row):
+        email = row.get("Business_Email", row.get("business_email", ""))
+        phone = row.get("Business_Phone", row.get("business_phone", ""))
+        website = row.get("Website", row.get("website", row.get("business_website", "")))
+        address = row.get("Business_Address", row.get("business_address", ""))
+        rating = row.get("Google_Rating", row.get("google_rating", ""))
+        return sum(bool(v and str(v).strip()) for v in (email, phone, website, address, rating))
+
+    ranked = sorted(rows, key=_score, reverse=True)
+    return ranked[:top_k]
+
+
+def _compact_history(history: list, keep_turns=_RAG_HISTORY_TURNS):
+    """Keep only recent user/assistant turns to control prompt growth."""
+    if not history:
+        return []
+    filtered = []
+    for msg in history:
+        role = msg.get("role")
+        content = msg.get("content")
+        if role in ("user", "assistant") and content:
+            filtered.append({"role": role, "content": content})
+    # keep_turns means user+assistant pairs; multiply by 2 for message count
+    return filtered[-(keep_turns * 2):]
 
 
 def _auto_crm_prefix(user_message: str) -> str:
@@ -4029,15 +4075,25 @@ def _auto_crm_prefix(user_message: str) -> str:
             return ""
         rows = result["rows"]
         count = result["count"]
-        # Format as a compact summary for the model
+        # Format as compact RAG context (top rows + tight field truncation + char budget)
+        top_rows = _prioritized_rag_rows(rows)
         lines = [f"[DATABASE RESULTS — {count} matches for '{query}' from local leads DB]"]
-        for r in rows[:50]:
-            name = r.get("Business_Name", r.get("business_name", ""))
-            addr = r.get("Business_Address", r.get("business_address", ""))
-            phone = r.get("Business_Phone", r.get("business_phone", ""))
-            email = r.get("Business_Email", r.get("business_email", ""))
-            sheet = r.get("sheet", "")
-            lines.append(f"- {name} | {addr} | {phone} | {email} | [{sheet}]")
+        chars_used = len(lines[0])
+        for r in top_rows:
+            name = _truncate_for_prompt(r.get("Business_Name", r.get("business_name", "")))
+            addr = _truncate_for_prompt(r.get("Business_Address", r.get("business_address", "")))
+            phone = _truncate_for_prompt(r.get("Business_Phone", r.get("business_phone", "")))
+            email = _truncate_for_prompt(r.get("Business_Email", r.get("business_email", "")))
+            sheet = _truncate_for_prompt(r.get("sheet", ""), max_chars=40)
+            line = f"- {name} | {addr} | {phone} | {email} | [{sheet}]"
+            if chars_used + len(line) > _RAG_PREFIX_TOTAL_CHAR_BUDGET:
+                break
+            lines.append(line)
+            chars_used += len(line)
+        if len(rows) > len(lines) - 1:
+            lines.append(
+                f"[TRUNCATED CONTEXT — provided {len(lines) - 1} top rows out of {count} total matches]"
+            )
         lines.append("[END DATABASE RESULTS — present these to the user, do NOT search Maps]")
         return "\n".join(lines)
     except Exception:
