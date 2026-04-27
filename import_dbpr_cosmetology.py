@@ -69,10 +69,30 @@ _NAIL_PATTERNS = re.compile(
 )
 
 
-def _pg_url() -> str:
+def _pg_url(require_ssl: bool = True) -> str:
+    """
+    Build a psycopg2 DSN. Fixes copy/paste issues: extra parens, ppostgresql typo, extra quotes.
+    """
     u = (os.environ.get("DATABASE_URL") or "").strip()
     if not u:
         print("ERROR: Set DATABASE_URL to your Postgres connection string.", file=sys.stderr)
+        sys.exit(1)
+    if (u.startswith("(") and u.endswith(")")) or (u.startswith('"') and u.endswith('"')) or (
+        u.startswith("'") and u.endswith("'")
+    ):
+        u = u[1:-1].strip()
+    u_lower = u.lower()
+    if u_lower.startswith("ppostgresql://"):
+        u = "postgresql://" + u[len("ppostgresql://") :]
+    elif u_lower.startswith("postgresql://") or u_lower.startswith("postgres://"):
+        pass
+    else:
+        print(
+            "ERROR: DATABASE_URL should start with postgresql:// (or postgres://).\n"
+            "  No parentheses — copy the URL exactly from Render.\n"
+            f"  First 40 characters look like: {u[:40]!r}…",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if u.startswith("postgres://"):
         u = "postgresql://" + u[len("postgres://") :]
@@ -80,7 +100,7 @@ def _pg_url() -> str:
 
     parts = urlsplit(u)
     q = dict(parse_qsl(parts.query, keep_blank_values=True))
-    if "sslmode" not in q and "ssl" not in (parts.netloc or "").lower():
+    if require_ssl and "sslmode" not in q and "ssl" not in (parts.netloc or "").lower():
         q["sslmode"] = "require"
     query = urlencode(q)
     return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
@@ -271,7 +291,13 @@ def main() -> None:
 
     import psycopg2
 
-    url = _pg_url()
+    try:
+        url = _pg_url(require_ssl=not args.no_ssl)
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"ERROR: invalid DATABASE_URL: {e}", file=sys.stderr)
+        sys.exit(1)
     if args.no_ssl:
         from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -279,7 +305,16 @@ def main() -> None:
         q = {k: v for k, v in dict(parse_qsl(parts.query, keep_blank_values=True)).items() if k != "sslmode"}
         url = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(q), parts.fragment))
 
-    conn = psycopg2.connect(url)
+    try:
+        conn = psycopg2.connect(url)
+    except psycopg2.Error as e:
+        print(
+            "ERROR: could not connect to Postgres. Check DATABASE_URL in Render, copy the full URL only,\n"
+            "  with no ( ) around it, and the scheme must be postgresql:// (not ppostgresql).",
+            file=sys.stderr,
+        )
+        print(f"  Details: {e}", file=sys.stderr)
+        sys.exit(1)
     try:
         _replace_leads_table(conn, rows)
         conn.commit()
